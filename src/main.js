@@ -1,5 +1,5 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
-const HEX_RADIUS = 3;  // hex grid radius → 37 hexes total
+let HEX_RADIUS = 3;  // hex grid radius (configurable) — edge length = R+1
 const TILE_EMPTY     = 0;
 const TILE_WALL      = 1;
 const TILE_HILL      = 2; // range 4  (low)
@@ -24,13 +24,11 @@ const MAX_TROOPS              = 10;
 const FORTIFICATION_MISS_CHANCE = 0.5;
 const SPAWN_TURNS             = 3;
 
-// Storm: shrinking safe zone forces engagement
-const STORM_START_TURN     = 10;  // storm first strikes after this turn
-const STORM_SHRINK_INTERVAL = 4;  // shrinks every N turns after start
+// Storm: shrinking safe zone forces engagement (dynamic, see stormStartTurn / stormShrinkInterval)
 const STORM_DAMAGE          = 2;  // damage per turn to troops in storm
 
-const ZOOM_MIN  = 0.5;
-const ZOOM_MAX  = 4;
+const ZOOM_MIN  = 0.3;
+const ZOOM_MAX  = 6;
 const ZOOM_STEP = 0.15;
 
 // Flat-top hex cube directions [dq, dr]
@@ -56,6 +54,7 @@ let aiVsAiTimerId  = null;
 const AI_VS_AI_DELAY = 900;
 let cursor        = null;      // {q, r}
 let preResolveTroops = { p1: 0, p2: 0 }; // snapshot for tiebreaker
+let panX = 0, panY = 0;  // pan offset in pixels (for scrolling large maps)
 
 // Fog of War: tracks which enemy tiles each player can see
 // revealedTiles[OWNER_P1] = set of hexKeys that P1 can see (enemy tiles revealed to P1)
@@ -194,6 +193,7 @@ function init() {
   canvas.addEventListener('mouseleave',  onCanvasLeave);
   canvas.addEventListener('wheel',       onCanvasWheel, { passive: false });
   initTouchZoom();
+  initMousePan();
   initMobileUI();
   document.getElementById('btn-move').addEventListener('click',   onBtnMove);
   document.getElementById('btn-attack').addEventListener('click', onBtnAttack);
@@ -214,6 +214,18 @@ function init() {
     updatePhaseLabel();
   });
   document.getElementById('ai-vs-ai-pause').addEventListener('click', toggleAiVsAiPause);
+
+  const mapSlider = document.getElementById('map-size-slider');
+  const mapLabel  = document.getElementById('map-size-value');
+  mapSlider.addEventListener('input', () => {
+    mapLabel.textContent = mapSlider.value;
+  });
+  mapSlider.addEventListener('change', () => {
+    const edgeLen = parseInt(mapSlider.value, 10);
+    HEX_RADIUS = edgeLen - 1;
+    newGame();
+  });
+
   document.addEventListener('keydown', onKeyDown);
 }
 
@@ -231,10 +243,13 @@ function newGame() {
   validAtkTiles  = new Set();
   tooltipTile    = null;
   zoomLevel      = 1;
+  panX           = 0;
+  panY           = 0;
   cursor         = null;
   aiVsAiPaused   = false;
   revealedTiles  = { [OWNER_P1]: new Set(), [OWNER_P2]: new Set() };
   clearTimeout(aiVsAiTimerId);
+  resizeCanvas();
   render();
   updateHUD();
   updatePhaseLabel(); // calls scheduleAiTurnIfNeeded if needed
@@ -259,7 +274,10 @@ function generateMap() {
   const clearAround = (q, r) => {
     const t = tiles.get(hexKey(q, r));
     if (t) t.type = TILE_EMPTY;
-    for (const [nq, nr] of hexNeighbors(q, r)) tiles.get(hexKey(nq, nr)).type = TILE_EMPTY;
+    for (const [nq, nr] of hexNeighbors(q, r)) {
+      const nt = tiles.get(hexKey(nq, nr));
+      if (nt) nt.type = TILE_EMPTY;
+    }
   };
   clearAround(-HEX_RADIUS, 0);
   clearAround( HEX_RADIUS, 0);
@@ -274,22 +292,35 @@ function generateMap() {
 // ─── Canvas resize ────────────────────────────────────────────────────────────
 function resizeCanvas() {
   const wrapper = document.getElementById('grid-wrapper');
-  const size = Math.min(wrapper.clientWidth, wrapper.clientHeight, 600);
+  const maxW = wrapper.clientWidth;
+  const maxH = wrapper.clientHeight;
+  const fitSize = Math.min(maxW, maxH);
   // Bounding box in "size=1" units: width ≈ 3R+2.5, height ≈ sqrt(3)*(2R+1)
   const wUnits = 3 * HEX_RADIUS + 2.5;
   const hUnits = Math.sqrt(3) * (2 * HEX_RADIUS + 1);
-  const base   = Math.floor(size / Math.max(wUnits, hUnits));
-  hexSize = Math.max(6, Math.floor(base * zoomLevel));
+  const base   = Math.floor(fitSize / Math.max(wUnits, hUnits));
+  hexSize = Math.max(4, Math.floor(base * zoomLevel));
+  // Canvas can be larger than the viewport for panning
   canvas.width  = Math.ceil(hexSize * wUnits * 1.06);
   canvas.height = Math.ceil(hexSize * hUnits * 1.06);
+  // Clamp pan so map stays reachable
+  clampPan();
+}
+
+function clampPan() {
+  const wrapper = document.getElementById('grid-wrapper');
+  const maxPanX = Math.max(0, (canvas.width  - wrapper.clientWidth)  / 2 + hexSize * 2);
+  const maxPanY = Math.max(0, (canvas.height - wrapper.clientHeight) / 2 + hexSize * 2);
+  panX = Math.max(-maxPanX, Math.min(maxPanX, panX));
+  panY = Math.max(-maxPanY, Math.min(maxPanY, panY));
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 function render(flashMoves, flashAttacks) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  const originX = canvas.width  / 2;
-  const originY = canvas.height / 2;
+  const originX = canvas.width  / 2 + panX;
+  const originY = canvas.height / 2 + panY;
 
   const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
   const currentPlans = plans[currentOwner];
@@ -599,7 +630,7 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
   // 10. Storm overlay
   const safeRadius = getStormRadius();
   const distCenter = hexDist(0, 0, q, r);
-  if (turnNum >= STORM_START_TURN && distCenter > safeRadius) {
+  if (turnNum >= stormStartTurn() && distCenter > safeRadius) {
     // Active storm — purple haze
     hexPath(cx, cy, s);
     ctx.fillStyle = 'rgba(100, 20, 140, 0.38)';
@@ -614,7 +645,7 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     ctx.fillText('\u26a1', cx, cy);
     ctx.globalAlpha = 1;
     ctx.restore();
-  } else if (turnNum >= STORM_START_TURN - 2 && distCenter === safeRadius + 1 && distCenter <= HEX_RADIUS) {
+  } else if (turnNum >= stormStartTurn() - 2 && distCenter === safeRadius + 1 && distCenter <= HEX_RADIUS) {
     // Warning zone — this ring will be storm in the next shrink
     hexPath(cx, cy, s);
     ctx.fillStyle = 'rgba(255, 160, 40, 0.18)';
@@ -673,7 +704,7 @@ function drawTooltip(originX, originY) {
   const typeStr  = TILE_TYPE_LABELS[tile.type] ?? 'Unknown';
   const ownerStr = hidden ? '???' : tile.owner === OWNER_P1 ? 'P1' : tile.owner === OWNER_P2 ? 'P2' : 'None';
   const range    = getTileRange(tile);
-  const inStorm  = hexDist(0, 0, q, r) > getStormRadius() && turnNum >= STORM_START_TURN;
+  const inStorm  = hexDist(0, 0, q, r) > getStormRadius() && turnNum >= stormStartTurn();
   const lines    = [
     `(${q},${r}) ${typeStr}`,
     hidden ? 'Owner: ???  Troops: ???' : `Owner: ${ownerStr}  Troops: ${tile.troops}`,
@@ -725,8 +756,8 @@ function updateHUD() {
   // Storm HUD
   const stormEl = document.getElementById('storm-info');
   const safeR   = getStormRadius();
-  if (turnNum < STORM_START_TURN) {
-    const turnsLeft = STORM_START_TURN - turnNum;
+  if (turnNum < stormStartTurn()) {
+    const turnsLeft = stormStartTurn() - turnNum;
     stormEl.textContent = `\u26a1 Storm in ${turnsLeft} turn${turnsLeft > 1 ? 's' : ''}`;
     stormEl.style.color = '#a78bfa';
   } else if (safeR >= 0) {
@@ -862,8 +893,8 @@ function addLog(msg, cssClass) {
 // ─── Interaction ──────────────────────────────────────────────────────────────
 function onCanvasHover(e) {
   const rect = canvas.getBoundingClientRect();
-  const px = (e.clientX - rect.left) * (canvas.width  / rect.width)  - canvas.width  / 2;
-  const py = (e.clientY - rect.top)  * (canvas.height / rect.height) - canvas.height / 2;
+  const px = (e.clientX - rect.left) * (canvas.width  / rect.width)  - canvas.width  / 2 - panX;
+  const py = (e.clientY - rect.top)  * (canvas.height / rect.height) - canvas.height / 2 - panY;
   const { q, r } = pixelToHex(px, py);
   tooltipTile = tiles.has(hexKey(q, r)) ? { q, r } : null;
   render();
@@ -885,8 +916,8 @@ function onCanvasWheel(e) {
 function onCanvasClick(e) {
   if (!e.isPrimary) return;
   const rect = canvas.getBoundingClientRect();
-  const px = (e.clientX - rect.left) * (canvas.width  / rect.width)  - canvas.width  / 2;
-  const py = (e.clientY - rect.top)  * (canvas.height / rect.height) - canvas.height / 2;
+  const px = (e.clientX - rect.left) * (canvas.width  / rect.width)  - canvas.width  / 2 - panX;
+  const py = (e.clientY - rect.top)  * (canvas.height / rect.height) - canvas.height / 2 - panY;
   const { q, r } = pixelToHex(px, py);
   if (!tiles.has(hexKey(q, r))) return;
   playSound('select');
@@ -1364,9 +1395,15 @@ function resolveSpawn() {
 }
 
 // ─── Storm ────────────────────────────────────────────────────────────────────
+// Storm timing scales with map size so larger maps get more buildup time
+function stormStartTurn() { return Math.max(10, 6 + HEX_RADIUS * 2); }
+function stormShrinkInterval() { return Math.max(2, Math.floor(2 + HEX_RADIUS * 0.5)); }
+
 function getStormRadius() {
-  if (turnNum < STORM_START_TURN) return HEX_RADIUS;
-  const shrinks = 1 + Math.floor((turnNum - STORM_START_TURN) / STORM_SHRINK_INTERVAL);
+  const start = stormStartTurn();
+  const interval = stormShrinkInterval();
+  if (turnNum < start) return HEX_RADIUS;
+  const shrinks = 1 + Math.floor((turnNum - start) / interval);
   return Math.max(-1, HEX_RADIUS - shrinks);
 }
 
@@ -1568,7 +1605,7 @@ function makeAIPlansMediumFor(myOwner) {
       // Storm avoidance
       const safeR = getStormRadius();
       if (hexDist(0, 0, mt.q, mt.r) > safeR) score -= 15;
-      else if (hexDist(0, 0, mt.q, mt.r) === safeR && turnNum >= STORM_START_TURN - 2) score -= 5;
+      else if (hexDist(0, 0, mt.q, mt.r) === safeR && turnNum >= stormStartTurn() - 2) score -= 5;
 
       if (score > bestScore) { bestScore = score; best = mt; }
     }
@@ -1729,7 +1766,7 @@ function makeAIPlansHardFor(myOwner) {
       // Storm avoidance
       const safeR = getStormRadius();
       if (hexDist(0, 0, mt.q, mt.r) > safeR) score -= 20;
-      else if (hexDist(0, 0, mt.q, mt.r) === safeR && turnNum >= STORM_START_TURN - 2) score -= 6;
+      else if (hexDist(0, 0, mt.q, mt.r) === safeR && turnNum >= stormStartTurn() - 2) score -= 6;
 
       if (score > bestScore) { bestScore = score; best = mt; }
     }
@@ -1834,18 +1871,26 @@ function updateMobileBar() {
 
 function initTouchZoom() {
   let lastPinchDist = 0;
+  let lastTouchX = 0, lastTouchY = 0;
+  let isPanning = false;
 
   canvas.addEventListener('touchstart', (e) => {
     if (e.touches.length === 2) {
+      isPanning = false;
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       lastPinchDist = Math.hypot(dx, dy);
+    } else if (e.touches.length === 1) {
+      isPanning = true;
+      lastTouchX = e.touches[0].clientX;
+      lastTouchY = e.touches[0].clientY;
     }
   }, { passive: true });
 
   canvas.addEventListener('touchmove', (e) => {
     if (e.touches.length === 2) {
       e.preventDefault();
+      isPanning = false;
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.hypot(dx, dy);
@@ -1857,12 +1902,50 @@ function initTouchZoom() {
         render();
       }
       lastPinchDist = dist;
+    } else if (e.touches.length === 1 && isPanning) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - lastTouchX;
+      const dy = e.touches[0].clientY - lastTouchY;
+      const scaleX = canvas.width  / canvas.getBoundingClientRect().width;
+      const scaleY = canvas.height / canvas.getBoundingClientRect().height;
+      panX += dx * scaleX;
+      panY += dy * scaleY;
+      clampPan();
+      lastTouchX = e.touches[0].clientX;
+      lastTouchY = e.touches[0].clientY;
+      render();
     }
   }, { passive: false });
 
   canvas.addEventListener('touchend', () => {
     lastPinchDist = 0;
+    isPanning = false;
   }, { passive: true });
+}
+
+function initMousePan() {
+  let dragging = false, lastMX = 0, lastMY = 0;
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button === 1 || e.button === 2) {          // middle or right click
+      dragging = true; lastMX = e.clientX; lastMY = e.clientY;
+      e.preventDefault();
+    }
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const scaleX = canvas.width  / canvas.getBoundingClientRect().width;
+    const scaleY = canvas.height / canvas.getBoundingClientRect().height;
+    panX += (e.clientX - lastMX) * scaleX;
+    panY += (e.clientY - lastMY) * scaleY;
+    clampPan();
+    lastMX = e.clientX; lastMY = e.clientY;
+    render();
+  });
+  window.addEventListener('pointerup', (e) => {
+    if (e.button === 1 || e.button === 2) dragging = false;
+  });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

@@ -469,6 +469,52 @@ header h1 .subtitle {
   cursor: not-allowed;
 }
 
+/* ── Map Size Control ─────────────────────────────────────────────────────── */
+#map-size-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-top: 6px;
+}
+
+#map-size-control label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+#map-size-slider {
+  width: 100%;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--surface2);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+#map-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg);
+  cursor: pointer;
+}
+
+#map-size-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg);
+  cursor: pointer;
+}
+
 /* ── Color-coded Event Log Entries ───────────────────────────────────────── */
 #event-log li.log-move    { color: #6aabff; }
 #event-log li.log-attack  { color: #ff6b6b; }
