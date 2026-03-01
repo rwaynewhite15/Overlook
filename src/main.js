@@ -34,6 +34,7 @@ let validMoveTiles = new Set();
 let validAtkTiles  = new Set();
 let tooltipTile    = null;
 let zoomLevel      = 1;
+let aiEnabled      = false;
 
 // Canvas
 let canvas, ctx, cellSize;
@@ -116,6 +117,10 @@ function init() {
   document.getElementById('pass-btn').addEventListener('click',   onPassReady);
   document.getElementById('new-game-btn').addEventListener('click',     newGame);
   document.getElementById('new-game-win-btn').addEventListener('click', newGame);
+  document.getElementById('ai-toggle').addEventListener('change', e => {
+    aiEnabled = e.target.checked;
+    updatePhaseLabel();
+  });
 }
 
 function newGame() {
@@ -488,9 +493,13 @@ function updateHUD() {
 }
 
 function updatePhaseLabel() {
-  document.getElementById('phase-label').textContent =
-    phase === PHASE_P1 ? "Player 1's Turn — Select a tile"
-                       : "Player 2's Turn — Select a tile";
+  if (phase === PHASE_P1) {
+    document.getElementById('phase-label').textContent = "Player 1's Turn — Select a tile";
+  } else {
+    document.getElementById('phase-label').textContent = aiEnabled
+      ? "AI (Player 2) is planning…"
+      : "Player 2's Turn — Select a tile";
+  }
 }
 
 function showTileInfo(r, c) {
@@ -732,11 +741,17 @@ function onBtnDone() {
     validAtkTiles  = new Set();
     render();
     hideTileInfo();
-    document.getElementById('pass-title').textContent = 'Pass to Player 2';
-    document.getElementById('pass-msg').textContent   = 'Player 1 has finished planning. Hand the device to Player 2.';
-    document.getElementById('resolution-summary').classList.add('hidden');
-    document.getElementById('pass-overlay').classList.remove('hidden');
-    phase = PHASE_P2;
+    if (aiEnabled) {
+      makeAIPlans();
+      animateAndResolveTurn();
+    } else {
+      document.getElementById('pass-title').textContent = 'Pass to Player 2';
+      document.getElementById('pass-msg').textContent   = 'Player 1 has finished planning. Hand the device to Player 2.';
+      document.getElementById('resolution-summary').classList.add('hidden');
+      document.getElementById('pass-overlay').classList.remove('hidden');
+      document.getElementById('ai-toggle').disabled = true;
+      phase = PHASE_P2;
+    }
   } else {
     document.getElementById('pass-overlay').classList.add('hidden');
     animateAndResolveTurn();
@@ -745,6 +760,7 @@ function onBtnDone() {
 
 function onPassReady() {
   document.getElementById('pass-overlay').classList.add('hidden');
+  document.getElementById('ai-toggle').disabled = false;
   selected       = null;
   pendingAction  = null;
   validMoveTiles = new Set();
@@ -791,6 +807,7 @@ function resolveTurn() {
 
   document.getElementById('pass-title').textContent = `Turn ${turnNum} — Player 1's Planning Phase`;
   document.getElementById('pass-msg').textContent   = "Results resolved! Now it is Player 1's turn to plan.";
+  document.getElementById('ai-toggle').disabled = false;
 
   const summaryEl = document.getElementById('resolution-summary');
   summaryEl.classList.remove('hidden');
@@ -925,10 +942,64 @@ function resolveSpawn() {
       const tile = tiles[r][c];
       if (tile.owner !== OWNER_NONE && tile.troops > 0) {
         tile.ownedTurns++;
-        if (tile.ownedTurns >= SPAWN_TURNS)
+        if (tile.ownedTurns >= SPAWN_TURNS) {
           tile.troops = Math.min(MAX_TROOPS, tile.troops + 1);
+          tile.ownedTurns = 0;
+        }
       }
     }
+}
+
+// ─── AI Opponent ──────────────────────────────────────────────────────────────
+function makeAIPlans() {
+  plans[OWNER_P2] = [];
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const tile = tiles[r][c];
+      if (tile.owner !== OWNER_P2 || tile.troops === 0) continue;
+      if (plans[OWNER_P2].some(p => p.from.r === r && p.from.c === c)) continue;
+
+      // Prefer attacking P1 tiles within range
+      const atkTargets = [];
+      for (let tr = 0; tr < GRID; tr++)
+        for (let tc = 0; tc < GRID; tc++)
+          if (tiles[tr][tc].owner === OWNER_P1 && canAttack(r, c, tr, tc))
+            atkTargets.push({ r: tr, c: tc });
+      if (atkTargets.length > 0) {
+        const t = atkTargets[Math.floor(Math.random() * atkTargets.length)];
+        plans[OWNER_P2].push({ kind: 'attack', from: { r, c }, to: t });
+        addLog(`AI plans attack (${r},${c})→(${t.r},${t.c})`);
+        continue;
+      }
+
+      // Otherwise move toward the nearest P1 tile
+      const moveable = [];
+      for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+        const nr = r + dr, nc = c + dc;
+        if (nr < 0 || nr >= GRID || nc < 0 || nc >= GRID) continue;
+        if (tiles[nr][nc].type === TILE_WALL) continue;
+        if (tiles[nr][nc].owner !== OWNER_NONE && tiles[nr][nc].owner !== OWNER_P2) continue;
+        moveable.push({ r: nr, c: nc });
+      }
+      if (moveable.length === 0) continue;
+
+      const p1Tiles = [];
+      for (let pr = 0; pr < GRID; pr++)
+        for (let pc = 0; pc < GRID; pc++)
+          if (tiles[pr][pc].owner === OWNER_P1) p1Tiles.push({ r: pr, c: pc });
+
+      let best = moveable[Math.floor(Math.random() * moveable.length)];
+      if (p1Tiles.length > 0) {
+        let minDist = Infinity;
+        for (const mt of moveable) {
+          const dist = Math.min(...p1Tiles.map(pt => manhattan(mt.r, mt.c, pt.r, pt.c)));
+          if (dist < minDist) { minDist = dist; best = mt; }
+        }
+      }
+      plans[OWNER_P2].push({ kind: 'move', from: { r, c }, to: best });
+      addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`);
+    }
+  }
 }
 
 function checkWin() {
