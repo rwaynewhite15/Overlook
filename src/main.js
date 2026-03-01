@@ -1,5 +1,5 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
-const GRID       = 16;
+const GRID       = 5;
 const TILE_EMPTY = 0;
 const TILE_WALL  = 1;
 const TILE_HILL  = 2;
@@ -15,6 +15,12 @@ const BASE_RANGE              = 3;
 const HILL_RANGE              = 6;
 const MAX_TROOPS              = 10;
 const FORTIFICATION_MISS_CHANCE = 0.5;
+const SPAWN_TURNS             = 3;
+
+const ZOOM_MIN     = 0.5;
+const ZOOM_MAX     = 4;
+const ZOOM_STEP    = 0.15;
+const MIN_CELL_SIZE = 8; // minimum pixels per cell for usability
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tiles         = [];
@@ -27,6 +33,7 @@ let eventLog      = [];
 let validMoveTiles = new Set();
 let validAtkTiles  = new Set();
 let tooltipTile    = null;
+let zoomLevel      = 1;
 
 // Canvas
 let canvas, ctx, cellSize;
@@ -100,6 +107,7 @@ function init() {
   canvas.addEventListener('pointerdown', onCanvasClick);
   canvas.addEventListener('mousemove',   onCanvasHover);
   canvas.addEventListener('mouseleave',  onCanvasLeave);
+  canvas.addEventListener('wheel',       onCanvasWheel, { passive: false });
   document.getElementById('btn-move').addEventListener('click',   onBtnMove);
   document.getElementById('btn-attack').addEventListener('click', onBtnAttack);
   document.getElementById('btn-cancel').addEventListener('click', onBtnCancel);
@@ -123,6 +131,7 @@ function newGame() {
   validMoveTiles = new Set();
   validAtkTiles  = new Set();
   tooltipTile    = null;
+  zoomLevel      = 1;
   render();
   updateHUD();
   updatePhaseLabel();
@@ -140,7 +149,7 @@ function generateMap() {
       let type = TILE_EMPTY;
       if (rnd < 0.12)      type = TILE_WALL;
       else if (rnd < 0.24) type = TILE_HILL;
-      tiles[r][c] = { type, owner: OWNER_NONE, troops: 0 };
+      tiles[r][c] = { type, owner: OWNER_NONE, troops: 0, ownedTurns: 0 };
     }
   }
   // Clear 2×2 corners
@@ -159,7 +168,8 @@ function generateMap() {
 function resizeCanvas() {
   const wrapper = document.getElementById('grid-wrapper');
   const size = Math.min(wrapper.clientWidth, wrapper.clientHeight, 600);
-  cellSize = Math.floor(size / GRID);
+  const base = Math.floor(size / GRID);
+  cellSize = Math.max(MIN_CELL_SIZE, Math.floor(base * zoomLevel));
   canvas.width  = cellSize * GRID;
   canvas.height = cellSize * GRID;
 }
@@ -537,7 +547,16 @@ function onCanvasLeave() {
   render();
 }
 
+function onCanvasWheel(e) {
+  e.preventDefault();
+  const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
+  zoomLevel = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomLevel + delta));
+  resizeCanvas();
+  render();
+}
+
 function onCanvasClick(e) {
+  if (!e.isPrimary) return;
   const rect = canvas.getBoundingClientRect();
   const x = (e.clientX - rect.left) * (canvas.width  / rect.width);
   const y = (e.clientY - rect.top)  * (canvas.height / rect.height);
@@ -821,7 +840,7 @@ function resolveMovement(summary) {
 
     const fromTile = tiles[mv.from.r][mv.from.c];
     fromTile.troops = Math.max(0, fromTile.troops - 1);
-    if (fromTile.troops === 0) fromTile.owner = OWNER_NONE;
+    if (fromTile.troops === 0) { fromTile.owner = OWNER_NONE; fromTile.ownedTurns = 0; }
 
     if (!arrivals[k]) arrivals[k] = { owner: mv.owner, r: mv.to.r, c: mv.to.c, count: 0 };
     arrivals[k].count++;
@@ -832,7 +851,7 @@ function resolveMovement(summary) {
   for (const k in arrivals) {
     const { owner, r, c, count } = arrivals[k];
     const tile = tiles[r][c];
-    if (tile.owner === OWNER_NONE) { tile.owner = owner; tile.troops = count; }
+    if (tile.owner === OWNER_NONE) { tile.owner = owner; tile.troops = count; tile.ownedTurns = 0; }
     else if (tile.owner === owner) { tile.troops += count; }
   }
 }
@@ -886,7 +905,7 @@ function resolveAttacks(summary) {
     const prev      = tile.troops;
     tile.troops     = Math.max(0, tile.troops - damage[k]);
     summary.kills  += prev - tile.troops;
-    if (tile.troops === 0) tile.owner = OWNER_NONE;
+    if (tile.troops === 0) { tile.owner = OWNER_NONE; tile.ownedTurns = 0; }
   }
 
   // Mutual strike penalty on attackers
@@ -896,7 +915,7 @@ function resolveAttacks(summary) {
     const prev      = tile.troops;
     tile.troops     = Math.max(0, tile.troops - 1);
     summary.kills  += prev - tile.troops;
-    if (tile.troops === 0) tile.owner = OWNER_NONE;
+    if (tile.troops === 0) { tile.owner = OWNER_NONE; tile.ownedTurns = 0; }
   }
 }
 
@@ -904,8 +923,11 @@ function resolveSpawn() {
   for (let r = 0; r < GRID; r++)
     for (let c = 0; c < GRID; c++) {
       const tile = tiles[r][c];
-      if (tile.owner !== OWNER_NONE && tile.troops > 0)
-        tile.troops = Math.min(MAX_TROOPS, tile.troops + 1);
+      if (tile.owner !== OWNER_NONE && tile.troops > 0) {
+        tile.ownedTurns++;
+        if (tile.ownedTurns >= SPAWN_TURNS)
+          tile.troops = Math.min(MAX_TROOPS, tile.troops + 1);
+      }
     }
 }
 
