@@ -65,6 +65,7 @@
                 <button id="btn-undo" class="action-btn secondary">Undo</button>
               </div>
             </div>
+            <div id="plan-counter" class="hidden">Plans: 0 move(s), 0 attack(s)</div>
             <div id="done-area">
               <button id="btn-done" class="done-btn">Done</button>
             </div>
@@ -76,10 +77,15 @@
           </div>
 
           <button id="new-game-btn">New Game</button>
-          <label id="ai-toggle-label">
-            <input type="checkbox" id="ai-toggle" />
-            AI plays Player 2
-          </label>
+          <div id="ai-difficulty-control">
+            <label for="ai-difficulty">AI Opponent:</label>
+            <select id="ai-difficulty">
+              <option value="off">Off</option>
+              <option value="easy">Easy</option>
+              <option value="medium">Medium</option>
+              <option value="hard">Hard</option>
+            </select>
+          </div>
         </aside>
       </div>
     </div>

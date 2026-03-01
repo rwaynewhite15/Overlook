@@ -406,27 +406,69 @@ header h1 {
   transform: translateY(0);
 }
 
-/* ── AI Toggle ────────────────────────────────────────────────────────────── */
-#ai-toggle-label {
+/* ── AI Difficulty Control ────────────────────────────────────────────────── */
+#ai-difficulty-control {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 0.78rem;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
+  flex-direction: column;
+  gap: 4px;
   flex-shrink: 0;
 }
 
-#ai-toggle-label:hover {
-  color: var(--text);
+#ai-difficulty-control label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
-#ai-toggle {
-  accent-color: var(--accent);
-  width: 14px;
-  height: 14px;
+#ai-difficulty {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid #3a4a62;
+  border-radius: 6px;
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238a96a8'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+  transition: border-color 0.15s;
+}
+
+#ai-difficulty:hover {
+  border-color: var(--accent);
+}
+
+#ai-difficulty:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(226,176,74,0.2);
+}
+
+#ai-difficulty:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Color-coded Event Log Entries ───────────────────────────────────────── */
+#event-log li.log-move    { color: #6aabff; }
+#event-log li.log-attack  { color: #ff6b6b; }
+#event-log li.log-spawn   { color: #6ddb6d; }
+#event-log li.log-mutual  { color: #f0c040; }
+
+/* ── Plan Counter ─────────────────────────────────────────────────────────── */
+#plan-counter {
+  font-size: 0.7rem;
+  color: var(--accent);
+  margin-top: 6px;
+  padding: 4px 6px;
+  background: rgba(226,176,74,0.08);
+  border: 1px solid rgba(226,176,74,0.2);
+  border-radius: 4px;
 }
 
 /* ── Responsive: small screens go vertical ────────────────────────────────── */
