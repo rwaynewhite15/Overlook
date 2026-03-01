@@ -11,8 +11,8 @@ const OWNER_P2   = 2;
 const PHASE_P1   = 'p1';
 const PHASE_P2   = 'p2';
 
-const BASE_RANGE              = 3;
-const HILL_RANGE              = 6;
+const BASE_RANGE              = 2;
+const HILL_RANGE              = 4;
 const MAX_TROOPS              = 10;
 const FORTIFICATION_MISS_CHANCE = 0.5;
 const SPAWN_TURNS             = 3;
