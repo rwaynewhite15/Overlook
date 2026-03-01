@@ -1,5 +1,5 @@
 // ─── Constants ───────────────────────────────────────────────────────────────
-const GRID = 16;
+const GRID       = 16;
 const TILE_EMPTY = 0;
 const TILE_WALL  = 1;
 const TILE_HILL  = 2;
@@ -11,20 +11,68 @@ const OWNER_P2   = 2;
 const PHASE_P1   = 'p1';
 const PHASE_P2   = 'p2';
 
-const BASE_RANGE = 3;
-const HILL_RANGE = 6;
+const BASE_RANGE              = 3;
+const HILL_RANGE              = 6;
+const MAX_TROOPS              = 10;
+const FORTIFICATION_MISS_CHANCE = 0.5;
 
 // ─── State ────────────────────────────────────────────────────────────────────
-let tiles   = [];   // [row][col] = { type, owner, troops }
-let plans   = { [OWNER_P1]: [], [OWNER_P2]: [] };  // array of { kind:'move'|'attack', from:{r,c}, to:{r,c} }
-let phase   = PHASE_P1;
-let turnNum = 1;
-let selected = null;  // {r,c} of selected tile
-let pendingAction = null;  // 'move' | 'attack'
-let eventLog = [];
+let tiles         = [];
+let plans         = { [OWNER_P1]: [], [OWNER_P2]: [] };
+let phase         = PHASE_P1;
+let turnNum       = 1;
+let selected      = null;
+let pendingAction = null;
+let eventLog      = [];
+let validMoveTiles = new Set();
+let validAtkTiles  = new Set();
+let tooltipTile    = null;
 
 // Canvas
 let canvas, ctx, cellSize;
+
+// Audio
+let audioCtx = null;
+
+// ─── Audio ────────────────────────────────────────────────────────────────────
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playSound(type) {
+  try {
+    const ac   = getAudioCtx();
+    const osc  = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain);
+    gain.connect(ac.destination);
+    if (type === 'select') {
+      osc.frequency.setValueAtTime(660, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, ac.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.1, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.12);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.12);
+    } else if (type === 'attack') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(180, ac.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(55, ac.currentTime + 0.22);
+      gain.gain.setValueAtTime(0.25, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.28);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.28);
+    } else if (type === 'move') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(330, ac.currentTime);
+      osc.frequency.linearRampToValueAtTime(500, ac.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.08, ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.15);
+      osc.start(ac.currentTime);
+      osc.stop(ac.currentTime + 0.15);
+    }
+  } catch (_e) { /* audio unavailable */ }
+}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 function init() {
@@ -32,12 +80,15 @@ function init() {
   ctx    = canvas.getContext('2d');
 
   generateMap();
-  phase   = PHASE_P1;
-  turnNum = 1;
-  plans   = { [OWNER_P1]: [], [OWNER_P2]: [] };
-  selected = null;
-  pendingAction = null;
-  eventLog = [];
+  phase          = PHASE_P1;
+  turnNum        = 1;
+  plans          = { [OWNER_P1]: [], [OWNER_P2]: [] };
+  selected       = null;
+  pendingAction  = null;
+  eventLog       = [];
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
+  tooltipTile    = null;
 
   resizeCanvas();
   render();
@@ -47,12 +98,15 @@ function init() {
 
   window.addEventListener('resize', () => { resizeCanvas(); render(); });
   canvas.addEventListener('pointerdown', onCanvasClick);
-  document.getElementById('btn-move').addEventListener('click', onBtnMove);
+  canvas.addEventListener('mousemove',   onCanvasHover);
+  canvas.addEventListener('mouseleave',  onCanvasLeave);
+  document.getElementById('btn-move').addEventListener('click',   onBtnMove);
   document.getElementById('btn-attack').addEventListener('click', onBtnAttack);
   document.getElementById('btn-cancel').addEventListener('click', onBtnCancel);
-  document.getElementById('btn-done').addEventListener('click', onBtnDone);
-  document.getElementById('pass-btn').addEventListener('click', onPassReady);
-  document.getElementById('new-game-btn').addEventListener('click', newGame);
+  document.getElementById('btn-undo').addEventListener('click',   onBtnUndo);
+  document.getElementById('btn-done').addEventListener('click',   onBtnDone);
+  document.getElementById('pass-btn').addEventListener('click',   onPassReady);
+  document.getElementById('new-game-btn').addEventListener('click',     newGame);
   document.getElementById('new-game-win-btn').addEventListener('click', newGame);
 }
 
@@ -60,12 +114,15 @@ function newGame() {
   document.getElementById('win-overlay').classList.add('hidden');
   document.getElementById('pass-overlay').classList.add('hidden');
   generateMap();
-  phase   = PHASE_P1;
-  turnNum = 1;
-  plans   = { [OWNER_P1]: [], [OWNER_P2]: [] };
-  selected = null;
-  pendingAction = null;
-  eventLog = [];
+  phase          = PHASE_P1;
+  turnNum        = 1;
+  plans          = { [OWNER_P1]: [], [OWNER_P2]: [] };
+  selected       = null;
+  pendingAction  = null;
+  eventLog       = [];
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
+  tooltipTile    = null;
   render();
   updateHUD();
   updatePhaseLabel();
@@ -73,7 +130,7 @@ function newGame() {
   hideTileInfo();
 }
 
-// ─── Map Generation ────────────────────────────────────────────────────────────
+// ─── Map Generation ───────────────────────────────────────────────────────────
 function generateMap() {
   tiles = [];
   for (let r = 0; r < GRID; r++) {
@@ -81,26 +138,24 @@ function generateMap() {
     for (let c = 0; c < GRID; c++) {
       const rnd = Math.random();
       let type = TILE_EMPTY;
-      if (rnd < 0.12) type = TILE_WALL;
+      if (rnd < 0.12)      type = TILE_WALL;
       else if (rnd < 0.24) type = TILE_HILL;
       tiles[r][c] = { type, owner: OWNER_NONE, troops: 0 };
     }
   }
-
-  // Clear 2x2 corners
+  // Clear 2×2 corners
   for (let r = 0; r < 2; r++)
     for (let c = 0; c < 2; c++)
       tiles[r][c].type = TILE_EMPTY;
   for (let r = GRID - 2; r < GRID; r++)
     for (let c = GRID - 2; c < GRID; c++)
       tiles[r][c].type = TILE_EMPTY;
-
-  // Place starting troops
-  tiles[0][0].owner  = OWNER_P1; tiles[0][0].troops  = 1;
-  tiles[GRID-1][GRID-1].owner = OWNER_P2; tiles[GRID-1][GRID-1].troops = 1;
+  // Starting troops
+  tiles[0][0].owner            = OWNER_P1; tiles[0][0].troops            = 1;
+  tiles[GRID-1][GRID-1].owner  = OWNER_P2; tiles[GRID-1][GRID-1].troops  = 1;
 }
 
-// ─── Canvas / Rendering ────────────────────────────────────────────────────────
+// ─── Canvas resize ────────────────────────────────────────────────────────────
 function resizeCanvas() {
   const wrapper = document.getElementById('grid-wrapper');
   const size = Math.min(wrapper.clientWidth, wrapper.clientHeight, 600);
@@ -109,119 +164,306 @@ function resizeCanvas() {
   canvas.height = cellSize * GRID;
 }
 
-function render() {
+// ─── Render ───────────────────────────────────────────────────────────────────
+function render(flashMoves, flashAttacks) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
   const currentPlans = plans[currentOwner];
 
-  // Build highlight maps from current player's plans
-  const moveFromSet  = new Set();
-  const moveToSet    = new Set();
-  const atkFromSet   = new Set();
-  const atkToSet     = new Set();
+  const moveFromSet = new Set();
+  const moveToSet   = new Set();
+  const atkFromSet  = new Set();
+  const atkToSet    = new Set();
 
   for (const p of currentPlans) {
     const fk = key(p.from.r, p.from.c);
-    const tk = key(p.to.r, p.to.c);
+    const tk = key(p.to.r,   p.to.c);
     if (p.kind === 'move')   { moveFromSet.add(fk); moveToSet.add(tk); }
     if (p.kind === 'attack') { atkFromSet.add(fk);  atkToSet.add(tk);  }
   }
 
-  for (let r = 0; r < GRID; r++) {
-    for (let c = 0; c < GRID; c++) {
-      drawCell(r, c, currentOwner, moveFromSet, moveToSet, atkFromSet, atkToSet);
-    }
+  for (let r = 0; r < GRID; r++)
+    for (let c = 0; c < GRID; c++)
+      drawCell(r, c, moveFromSet, moveToSet, atkFromSet, atkToSet, flashMoves, flashAttacks);
+
+  // Subtle grid lines
+  ctx.strokeStyle = 'rgba(0,0,0,0.13)';
+  ctx.lineWidth   = 0.5;
+  for (let i = 0; i <= GRID; i++) {
+    ctx.beginPath(); ctx.moveTo(i * cellSize, 0);           ctx.lineTo(i * cellSize, canvas.height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,            i * cellSize); ctx.lineTo(canvas.width, i * cellSize); ctx.stroke();
   }
 
-  // Draw grid lines
-  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-  ctx.lineWidth = 0.5;
-  for (let i = 0; i <= GRID; i++) {
-    ctx.beginPath(); ctx.moveTo(i * cellSize, 0); ctx.lineTo(i * cellSize, canvas.height); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, i * cellSize); ctx.lineTo(canvas.width, i * cellSize); ctx.stroke();
-  }
+  // Tooltip drawn on top of everything
+  if (tooltipTile) drawTooltip();
 }
 
-function drawCell(r, c, currentOwner, moveFromSet, moveToSet, atkFromSet, atkToSet) {
-  const tile = tiles[r][c];
-  const x = c * cellSize, y = r * cellSize;
-  const cs = cellSize;
-  const k = key(r, c);
+// ─── Path helper ──────────────────────────────────────────────────────────────
+function pathRoundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y,     x + w, y + r,     r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x,      y + h, x,       y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y,    x + r, y,       r);
+  ctx.closePath();
+}
 
-  // Base background color
-  let bg;
-  if (tile.type === TILE_WALL)       bg = '#888';
-  else if (tile.type === TILE_HILL)  bg = '#2d6a2d';
-  else                               bg = '#d4c9a8';
+// ─── Terrain drawing ──────────────────────────────────────────────────────────
+function drawEmpty(x, y, cs) {
+  const g = ctx.createLinearGradient(x, y, x + cs, y + cs);
+  g.addColorStop(0, '#c8bd9e');
+  g.addColorStop(1, '#b4a882');
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, cs, cs);
+}
 
+function drawWall(x, y, cs) {
+  const d = Math.max(3, Math.floor(cs * 0.22));
+
+  // Front face
+  const fg = ctx.createLinearGradient(x, y + d, x, y + cs);
+  fg.addColorStop(0, '#a8a8a8');
+  fg.addColorStop(1, '#5a5a5a');
+  ctx.fillStyle = fg;
+  ctx.fillRect(x, y + d, cs - d, cs - d);
+
+  // Top face (parallelogram)
+  const tg = ctx.createLinearGradient(x, y, x + d, y + d);
+  tg.addColorStop(0, '#e2e2e2');
+  tg.addColorStop(1, '#adadad');
+  ctx.fillStyle = tg;
+  ctx.beginPath();
+  ctx.moveTo(x,        y + d);
+  ctx.lineTo(x + d,    y);
+  ctx.lineTo(x + cs,   y);
+  ctx.lineTo(x + cs - d, y + d);
+  ctx.closePath();
+  ctx.fill();
+
+  // Right side face
+  const sg = ctx.createLinearGradient(x + cs - d, 0, x + cs, 0);
+  sg.addColorStop(0, '#7c7c7c');
+  sg.addColorStop(1, '#464646');
+  ctx.fillStyle = sg;
+  ctx.beginPath();
+  ctx.moveTo(x + cs - d, y + d);
+  ctx.lineTo(x + cs,     y);
+  ctx.lineTo(x + cs,     y + cs - d);
+  ctx.lineTo(x + cs - d, y + cs);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawHill(x, y, cs) {
+  // Base ground
+  const bg = ctx.createLinearGradient(x, y, x, y + cs);
+  bg.addColorStop(0, '#3d7a30');
+  bg.addColorStop(1, '#1e4016');
   ctx.fillStyle = bg;
   ctx.fillRect(x, y, cs, cs);
 
-  // Ownership tint (semi-transparent overlay)
-  if (tile.owner === OWNER_P1) {
-    ctx.fillStyle = 'rgba(60,100,200,0.45)';
-    ctx.fillRect(x, y, cs, cs);
-  } else if (tile.owner === OWNER_P2) {
-    ctx.fillStyle = 'rgba(200,50,50,0.45)';
-    ctx.fillRect(x, y, cs, cs);
+  // Elevation mound
+  const cx2 = x + cs * 0.5;
+  const cy2 = y + cs * 0.52;
+  const mg  = ctx.createRadialGradient(cx2 - cs * 0.1, cy2 - cs * 0.12, 0, cx2, cy2, cs * 0.44);
+  mg.addColorStop(0,   'rgba(210,250,150,0.92)');
+  mg.addColorStop(0.4, 'rgba(120,190,75,0.65)');
+  mg.addColorStop(1,   'rgba(25,70,15,0)');
+  ctx.fillStyle = mg;
+  ctx.fillRect(x, y, cs, cs);
+
+  // Hill icon
+  ctx.fillStyle    = 'rgba(55,95,35,0.9)';
+  ctx.font         = `${Math.max(8, Math.floor(cs * 0.42))}px serif`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('▲', x + cs / 2, y + cs / 2 - cs * 0.05);
+}
+
+// ─── Cell drawing ─────────────────────────────────────────────────────────────
+function drawCell(r, c, moveFromSet, moveToSet, atkFromSet, atkToSet, flashMoves, flashAttacks) {
+  const tile = tiles[r][c];
+  const x = c * cellSize, y = r * cellSize;
+  const cs = cellSize;
+  const k  = key(r, c);
+
+  // 1. Base terrain
+  if      (tile.type === TILE_WALL) drawWall(x, y, cs);
+  else if (tile.type === TILE_HILL) drawHill(x, y, cs);
+  else                              drawEmpty(x, y, cs);
+
+  // 2. Shadow cast from walls onto adjacent non-wall tiles
+  if (tile.type !== TILE_WALL) {
+    let shadow = 0;
+    if (r > 0      && tiles[r - 1][c].type === TILE_WALL) shadow += 0.2;
+    if (c > 0      && tiles[r][c - 1].type === TILE_WALL) shadow += 0.2;
+    if (shadow > 0) {
+      ctx.fillStyle = `rgba(0,0,0,${Math.min(shadow, 0.28)})`;
+      ctx.fillRect(x, y, cs, cs);
+    }
   }
 
-  // Plan highlights (drawn over base but under text)
-  if (selected && selected.r === r && selected.c === c) {
-    ctx.fillStyle = 'rgba(255,255,0,0.55)';
-    ctx.fillRect(x, y, cs, cs);
+  // 3. Ownership tint + glow border
+  if (tile.type !== TILE_WALL) {
+    if (tile.owner === OWNER_P1) {
+      ctx.fillStyle   = 'rgba(60,110,230,0.22)';
+      ctx.fillRect(x, y, cs, cs);
+      ctx.strokeStyle = 'rgba(80,150,255,0.55)';
+      ctx.lineWidth   = 1.5;
+      ctx.strokeRect(x + 0.75, y + 0.75, cs - 1.5, cs - 1.5);
+    } else if (tile.owner === OWNER_P2) {
+      ctx.fillStyle   = 'rgba(220,50,50,0.22)';
+      ctx.fillRect(x, y, cs, cs);
+      ctx.strokeStyle = 'rgba(255,80,80,0.55)';
+      ctx.lineWidth   = 1.5;
+      ctx.strokeRect(x + 0.75, y + 0.75, cs - 1.5, cs - 1.5);
+    }
   }
-  if (moveToSet.has(k)) {
+
+  // 4. Flash animation overlay (resolution preview)
+  if (flashMoves   && flashMoves.has(k)) {
     ctx.fillStyle = 'rgba(80,160,255,0.55)';
     ctx.fillRect(x, y, cs, cs);
   }
-  if (atkToSet.has(k)) {
-    ctx.fillStyle = 'rgba(255,80,80,0.55)';
+  if (flashAttacks && flashAttacks.has(k)) {
+    ctx.fillStyle = 'rgba(255,60,60,0.55)';
     ctx.fillRect(x, y, cs, cs);
   }
+
+  // 5. Range highlights (valid move / attack targets during planning)
+  if (validMoveTiles.has(k) && tile.type !== TILE_WALL) {
+    ctx.fillStyle   = 'rgba(80,160,255,0.28)';
+    ctx.fillRect(x, y, cs, cs);
+    ctx.strokeStyle = 'rgba(100,180,255,0.75)';
+    ctx.lineWidth   = 1.5;
+    ctx.strokeRect(x + 0.75, y + 0.75, cs - 1.5, cs - 1.5);
+  }
+  if (validAtkTiles.has(k)) {
+    ctx.fillStyle   = 'rgba(255,60,60,0.28)';
+    ctx.fillRect(x, y, cs, cs);
+    ctx.strokeStyle = 'rgba(255,100,100,0.75)';
+    ctx.lineWidth   = 1.5;
+    ctx.strokeRect(x + 0.75, y + 0.75, cs - 1.5, cs - 1.5);
+  }
+
+  // 6. Selected tile glow (double-ring)
+  if (selected && selected.r === r && selected.c === c) {
+    ctx.strokeStyle = 'rgba(255,220,0,0.95)';
+    ctx.lineWidth   = 3;
+    ctx.strokeRect(x + 1.5, y + 1.5, cs - 3, cs - 3);
+    ctx.strokeStyle = 'rgba(255,200,0,0.35)';
+    ctx.lineWidth   = 6;
+    ctx.strokeRect(x + 3, y + 3, cs - 6, cs - 6);
+  }
+
+  // 7. Plan highlights (destinations = dashed, sources = white border)
+  if (moveToSet.has(k)) {
+    ctx.fillStyle   = 'rgba(80,160,255,0.48)';
+    ctx.fillRect(x, y, cs, cs);
+    ctx.strokeStyle = 'rgba(130,200,255,0.9)';
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2);
+    ctx.setLineDash([]);
+  }
+  if (atkToSet.has(k)) {
+    ctx.fillStyle   = 'rgba(255,60,60,0.48)';
+    ctx.fillRect(x, y, cs, cs);
+    ctx.strokeStyle = 'rgba(255,130,130,0.9)';
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2);
+    ctx.setLineDash([]);
+  }
   if (moveFromSet.has(k) || atkFromSet.has(k)) {
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth   = 2;
     ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2);
   }
 
-  // Hill icon
-  if (tile.type === TILE_HILL) {
-    ctx.fillStyle = '#8fbc8f';
-    ctx.font = `${Math.max(8, cs * 0.45)}px serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('▲', x + cs / 2, y + cs / 2 - cs * 0.1);
-  }
+  // 8. Troop badge
+  if (tile.type !== TILE_WALL && tile.troops > 0)
+    drawTroopBadge(x, y, cs, tile.troops, tile.owner);
+}
 
-  // Troop count
-  if (tile.troops > 0) {
-    const fontSize = Math.max(8, Math.floor(cs * 0.38));
-    ctx.font = `bold ${fontSize}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+function drawTroopBadge(x, y, cs, troops, owner) {
+  const bw = Math.max(13, Math.floor(cs * 0.52));
+  const bh = Math.max(9,  Math.floor(cs * 0.29));
+  const bx = x + cs * 0.5 - bw * 0.5;
+  const by = y + cs - bh - Math.max(2, Math.floor(cs * 0.07));
+  const rx = Math.max(2, Math.floor(bh * 0.44));
 
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillText(tile.troops, x + cs / 2 + 1, y + cs / 2 + cs * 0.18 + 1);
+  // Drop shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  pathRoundRect(bx + 1.5, by + 1.5, bw, bh, rx);
+  ctx.fill();
 
-    ctx.fillStyle = troopCountColor(tile.owner);
-    ctx.fillText(tile.troops, x + cs / 2, y + cs / 2 + cs * 0.18);
-  }
+  // Badge body
+  ctx.fillStyle = owner === OWNER_P1 ? '#1840a0' : owner === OWNER_P2 ? '#961818' : '#383838';
+  pathRoundRect(bx, by, bw, bh, rx);
+  ctx.fill();
+
+  // Top-half sheen
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  pathRoundRect(bx, by, bw, bh * 0.52, rx);
+  ctx.fill();
+
+  // Count text
+  ctx.fillStyle    = '#ffffff';
+  ctx.font         = `bold ${Math.max(7, Math.floor(cs * 0.25))}px sans-serif`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(troops.toString(), x + cs * 0.5, by + bh * 0.5);
+}
+
+function drawTooltip() {
+  const { r, c } = tooltipTile;
+  if (r < 0 || r >= GRID || c < 0 || c >= GRID) return;
+  const tile     = tiles[r][c];
+  const typeStr  = TILE_TYPE_LABELS[tile.type] ?? 'Unknown';
+  const ownerStr = tile.owner === OWNER_P1 ? 'P1' : tile.owner === OWNER_P2 ? 'P2' : 'None';
+  const range    = tile.type === TILE_HILL ? HILL_RANGE : BASE_RANGE;
+  const lines    = [
+    `(${r},${c}) ${typeStr}`,
+    `Owner: ${ownerStr}  Troops: ${tile.troops}`,
+    `Range: ${range}`,
+  ];
+
+  const lineH = 13, pad = 6, tw = 114, th = lines.length * lineH + pad * 2;
+  let tx = c * cellSize + cellSize + 3;
+  let ty = r * cellSize + 2;
+  if (tx + tw > canvas.width)  tx = c * cellSize - tw - 3;
+  if (ty + th > canvas.height) ty = canvas.height - th - 2;
+
+  ctx.fillStyle = 'rgba(10,18,36,0.93)';
+  pathRoundRect(tx, ty, tw, th, 4);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(226,176,74,0.65)';
+  ctx.lineWidth   = 1;
+  pathRoundRect(tx, ty, tw, th, 4);
+  ctx.stroke();
+
+  ctx.fillStyle    = '#e0e0e0';
+  ctx.font         = `${Math.floor(lineH * 0.88)}px sans-serif`;
+  ctx.textAlign    = 'left';
+  ctx.textBaseline = 'top';
+  for (let i = 0; i < lines.length; i++)
+    ctx.fillText(lines[i], tx + pad, ty + pad + i * lineH);
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
-function key(r, c) { return r * GRID + c; }
+function key(r, c)    { return r * GRID + c; }
 function decodeKey(k) { return { r: Math.floor(k / GRID), c: k % GRID }; }
 
 const TILE_TYPE_LABELS = { [TILE_EMPTY]: 'Empty', [TILE_WALL]: 'Wall', [TILE_HILL]: 'Hill' };
-
-function troopCountColor(owner) {
-  if (owner === OWNER_P1) return '#ddeeff';
-  if (owner === OWNER_P2) return '#ffdddd';
-  return '#fff';
-}
 
 function updateHUD() {
   let p1c = 0, p2c = 0;
@@ -236,26 +478,25 @@ function updateHUD() {
 }
 
 function updatePhaseLabel() {
-  const label = document.getElementById('phase-label');
-  if (phase === PHASE_P1)
-    label.textContent = "Player 1's Turn — Select a tile";
-  else
-    label.textContent = "Player 2's Turn — Select a tile";
+  document.getElementById('phase-label').textContent =
+    phase === PHASE_P1 ? "Player 1's Turn — Select a tile"
+                       : "Player 2's Turn — Select a tile";
 }
 
 function showTileInfo(r, c) {
-  const tile = tiles[r][c];
-  const detail = document.getElementById('tile-detail');
-  const typeStr = TILE_TYPE_LABELS[tile.type] ?? 'Unknown';
+  const tile     = tiles[r][c];
+  const typeStr  = TILE_TYPE_LABELS[tile.type] ?? 'Unknown';
   const ownerStr = tile.owner === OWNER_P1 ? 'Player 1' : tile.owner === OWNER_P2 ? 'Player 2' : 'None';
-  detail.textContent = `(${r},${c}) ${typeStr} | Owner: ${ownerStr} | Troops: ${tile.troops}`;
+  document.getElementById('tile-detail').textContent =
+    `(${r},${c}) ${typeStr} | Owner: ${ownerStr} | Troops: ${tile.troops}`;
   document.getElementById('tile-info').classList.remove('hidden');
 
   const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
-  const hasMoved   = plans[currentOwner].some(p => p.kind === 'move'   && p.from.r === r && p.from.c === c);
-  const hasAttacked= plans[currentOwner].some(p => p.kind === 'attack' && p.from.r === r && p.from.c === c);
-  document.getElementById('btn-move').disabled   = hasMoved   || tile.owner !== currentOwner || tile.troops === 0;
-  document.getElementById('btn-attack').disabled = hasAttacked|| tile.owner !== currentOwner || tile.troops === 0;
+  const hasMoved    = plans[currentOwner].some(p => p.kind === 'move'   && p.from.r === r && p.from.c === c);
+  const hasAttacked = plans[currentOwner].some(p => p.kind === 'attack' && p.from.r === r && p.from.c === c);
+  document.getElementById('btn-move').disabled   = hasMoved    || tile.owner !== currentOwner || tile.troops === 0;
+  document.getElementById('btn-attack').disabled = hasAttacked || tile.owner !== currentOwner || tile.troops === 0;
+  document.getElementById('btn-undo').disabled   = plans[currentOwner].length === 0;
 }
 
 function hideTileInfo() {
@@ -281,20 +522,33 @@ function addLog(msg) {
 }
 
 // ─── Interaction ──────────────────────────────────────────────────────────────
+function onCanvasHover(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * (canvas.width  / rect.width);
+  const y = (e.clientY - rect.top)  * (canvas.height / rect.height);
+  const c = Math.floor(x / cellSize);
+  const r = Math.floor(y / cellSize);
+  tooltipTile = (r >= 0 && r < GRID && c >= 0 && c < GRID) ? { r, c } : null;
+  render();
+}
+
+function onCanvasLeave() {
+  tooltipTile = null;
+  render();
+}
+
 function onCanvasClick(e) {
   const rect = canvas.getBoundingClientRect();
-  const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const x = (e.clientX - rect.left) * (canvas.width  / rect.width);
   const y = (e.clientY - rect.top)  * (canvas.height / rect.height);
   const c = Math.floor(x / cellSize);
   const r = Math.floor(y / cellSize);
   if (r < 0 || r >= GRID || c < 0 || c >= GRID) return;
-
+  playSound('select');
   handleTileClick(r, c);
 }
 
 function handleTileClick(r, c) {
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
-
   if (pendingAction === 'move') {
     tryPlanMove(r, c);
     return;
@@ -303,34 +557,78 @@ function handleTileClick(r, c) {
     tryPlanAttack(r, c);
     return;
   }
-
-  // Normal selection
-  selected = { r, c };
-  pendingAction = null;
+  selected       = { r, c };
+  pendingAction  = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
   render();
   showTileInfo(r, c);
 }
 
 function onBtnMove() {
   if (!selected) return;
-  pendingAction = 'move';
-  document.getElementById('phase-label').textContent = 'Click an adjacent empty tile to move to';
+  pendingAction  = 'move';
+  validMoveTiles = getValidMoveTiles(selected.r, selected.c);
+  validAtkTiles  = new Set();
+  document.getElementById('phase-label').textContent = 'Click a highlighted tile to move to';
   render();
 }
 
 function onBtnAttack() {
   if (!selected) return;
-  pendingAction = 'attack';
-  document.getElementById('phase-label').textContent = 'Click an enemy tile to attack';
+  pendingAction  = 'attack';
+  validAtkTiles  = getValidAtkTiles(selected.r, selected.c);
+  validMoveTiles = new Set();
+  document.getElementById('phase-label').textContent = 'Click a highlighted enemy tile to attack';
   render();
 }
 
 function onBtnCancel() {
-  pendingAction = null;
-  selected = null;
+  pendingAction  = null;
+  selected       = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
   render();
   hideTileInfo();
   updatePhaseLabel();
+}
+
+function onBtnUndo() {
+  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  if (plans[currentOwner].length === 0) return;
+  const removed = plans[currentOwner].pop();
+  addLog(`Undo: removed ${removed.kind} plan from (${removed.from.r},${removed.from.c})`);
+  pendingAction  = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
+  render();
+  if (selected) showTileInfo(selected.r, selected.c);
+  else document.getElementById('btn-undo').disabled = plans[currentOwner].length === 0;
+  updatePhaseLabel();
+}
+
+function getValidMoveTiles(r, c) {
+  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const result = new Set();
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (nr < 0 || nr >= GRID || nc < 0 || nc >= GRID) continue;
+    if (tiles[nr][nc].type === TILE_WALL) continue;
+    if (tiles[nr][nc].owner !== OWNER_NONE && tiles[nr][nc].owner !== currentOwner) continue;
+    result.add(key(nr, nc));
+  }
+  return result;
+}
+
+function getValidAtkTiles(r, c) {
+  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const result = new Set();
+  for (let tr = 0; tr < GRID; tr++)
+    for (let tc = 0; tc < GRID; tc++) {
+      if (tiles[tr][tc].owner === OWNER_NONE || tiles[tr][tc].owner === currentOwner) continue;
+      if (canAttack(r, c, tr, tc)) result.add(key(tr, tc));
+    }
+  return result;
 }
 
 function tryPlanMove(r, c) {
@@ -339,35 +637,23 @@ function tryPlanMove(r, c) {
 
   if (!isAdjacent(from.r, from.c, r, c)) {
     addLog('Move: must be adjacent.');
-    pendingAction = null;
-    updatePhaseLabel();
-    return;
-  }
-  if (tiles[r][c].type === TILE_WALL) {
+  } else if (tiles[r][c].type === TILE_WALL) {
     addLog('Move: cannot move onto a wall.');
-    pendingAction = null;
-    updatePhaseLabel();
-    return;
-  }
-  // Can move onto an empty tile OR a friendly tile
-  // Cannot move onto an enemy tile
-  if (tiles[r][c].owner !== OWNER_NONE && tiles[r][c].owner !== currentOwner) {
+  } else if (tiles[r][c].owner !== OWNER_NONE && tiles[r][c].owner !== currentOwner) {
     addLog('Move: cannot move onto an enemy tile.');
-    pendingAction = null;
-    updatePhaseLabel();
-    return;
+  } else {
+    plans[currentOwner] = plans[currentOwner].filter(p => !(p.kind === 'move' && p.from.r === from.r && p.from.c === from.c));
+    plans[currentOwner].push({ kind: 'move', from: { r: from.r, c: from.c }, to: { r, c } });
+    addLog(`P${currentOwner} plans move (${from.r},${from.c})→(${r},${c})`);
+    playSound('move');
+    selected       = null;
+    hideTileInfo();
   }
-
-  // Remove any existing move plan from this tile
-  plans[currentOwner] = plans[currentOwner].filter(p => !(p.kind === 'move' && p.from.r === from.r && p.from.c === from.c));
-  plans[currentOwner].push({ kind: 'move', from: { r: from.r, c: from.c }, to: { r, c } });
-
-  pendingAction = null;
-  selected = null;
-  hideTileInfo();
+  pendingAction  = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
   render();
   updatePhaseLabel();
-  addLog(`P${currentOwner} plans move (${from.r},${from.c})→(${r},${c})`);
 }
 
 function tryPlanAttack(r, c) {
@@ -376,260 +662,251 @@ function tryPlanAttack(r, c) {
 
   if (tiles[r][c].owner === currentOwner) {
     addLog('Attack: cannot attack own tile.');
-    pendingAction = null;
-    updatePhaseLabel();
-    return;
-  }
-  if (tiles[r][c].owner === OWNER_NONE) {
+  } else if (tiles[r][c].owner === OWNER_NONE) {
     addLog('Attack: no enemy troops there.');
-    pendingAction = null;
-    updatePhaseLabel();
-    return;
-  }
-
-  if (!canAttack(from.r, from.c, r, c)) {
+  } else if (!canAttack(from.r, from.c, r, c)) {
     addLog('Attack: target out of range or blocked by wall.');
-    pendingAction = null;
-    updatePhaseLabel();
-    return;
+  } else {
+    plans[currentOwner] = plans[currentOwner].filter(p => !(p.kind === 'attack' && p.from.r === from.r && p.from.c === from.c));
+    plans[currentOwner].push({ kind: 'attack', from: { r: from.r, c: from.c }, to: { r, c } });
+    addLog(`P${currentOwner} plans attack (${from.r},${from.c})→(${r},${c})`);
+    playSound('attack');
+    selected       = null;
+    hideTileInfo();
   }
-
-  // Remove existing attack from this tile
-  plans[currentOwner] = plans[currentOwner].filter(p => !(p.kind === 'attack' && p.from.r === from.r && p.from.c === from.c));
-  plans[currentOwner].push({ kind: 'attack', from: { r: from.r, c: from.c }, to: { r, c } });
-
-  pendingAction = null;
-  selected = null;
-  hideTileInfo();
+  pendingAction  = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
   render();
   updatePhaseLabel();
-  addLog(`P${currentOwner} plans attack (${from.r},${from.c})→(${r},${c})`);
 }
 
-// ─── Attack range / LOS ────────────────────────────────────────────────────────
-function manhattan(r1, c1, r2, c2) {
-  return Math.abs(r1 - r2) + Math.abs(c1 - c2);
-}
-
-function isAdjacent(r1, c1, r2, c2) {
-  return manhattan(r1, c1, r2, c2) === 1;
-}
+// ─── Attack range / LOS ───────────────────────────────────────────────────────
+function manhattan(r1, c1, r2, c2) { return Math.abs(r1 - r2) + Math.abs(c1 - c2); }
+function isAdjacent(r1, c1, r2, c2) { return manhattan(r1, c1, r2, c2) === 1; }
 
 function canAttack(fr, fc, tr, tc) {
-  const tile = tiles[fr][fc];
+  const tile   = tiles[fr][fc];
   const isHill = tile.type === TILE_HILL;
-  const range = isHill ? HILL_RANGE : BASE_RANGE;
-
+  const range  = isHill ? HILL_RANGE : BASE_RANGE;
   if (manhattan(fr, fc, tr, tc) > range) return false;
-  if (isHill) return true; // Hills shoot over walls
-
-  // Check wall blocking: a wall adjacent to shooter in direction of target blocks
+  if (isHill) return true;
   return !wallBlocksShot(fr, fc, tr, tc);
 }
 
 function wallBlocksShot(fr, fc, tr, tc) {
-  // Direction vector (normalized to sign)
-  const dr = tr - fr;
-  const dc = tc - fc;
-
-  // The wall must be directly adjacent to the shooter AND roughly in direction of target
-  const adjacents = [
-    { r: fr - 1, c: fc },
-    { r: fr + 1, c: fc },
-    { r: fr,     c: fc - 1 },
-    { r: fr,     c: fc + 1 },
-  ];
-
-  for (const adj of adjacents) {
+  const dr = tr - fr, dc = tc - fc;
+  for (const adj of [{ r: fr-1, c: fc }, { r: fr+1, c: fc }, { r: fr, c: fc-1 }, { r: fr, c: fc+1 }]) {
     if (adj.r < 0 || adj.r >= GRID || adj.c < 0 || adj.c >= GRID) continue;
     if (tiles[adj.r][adj.c].type !== TILE_WALL) continue;
-
-    // Is this wall in roughly the direction of the target?
-    const adr = adj.r - fr;
-    const adc = adj.c - fc;
-
-    // Dot product sign: positive means same general direction
-    const dot = adr * dr + adc * dc;
-    if (dot > 0) return true;
+    if ((adj.r - fr) * dr + (adj.c - fc) * dc > 0) return true;
   }
   return false;
 }
 
-// ─── Turn / Done handling ─────────────────────────────────────────────────────
+// ─── Turn / Done ──────────────────────────────────────────────────────────────
 function onBtnDone() {
   if (phase === PHASE_P1) {
-    // Show pass screen
-    selected = null;
-    pendingAction = null;
+    selected       = null;
+    pendingAction  = null;
+    validMoveTiles = new Set();
+    validAtkTiles  = new Set();
     render();
     hideTileInfo();
     document.getElementById('pass-title').textContent = 'Pass to Player 2';
     document.getElementById('pass-msg').textContent   = 'Player 1 has finished planning. Hand the device to Player 2.';
+    document.getElementById('resolution-summary').classList.add('hidden');
     document.getElementById('pass-overlay').classList.remove('hidden');
     phase = PHASE_P2;
   } else {
-    // P2 done — resolve turn
     document.getElementById('pass-overlay').classList.add('hidden');
-    resolveTurn();
+    animateAndResolveTurn();
   }
 }
 
 function onPassReady() {
   document.getElementById('pass-overlay').classList.add('hidden');
-  selected = null;
-  pendingAction = null;
+  selected       = null;
+  pendingAction  = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
   render();
   hideTileInfo();
   updatePhaseLabel();
 }
 
+// ─── Animated turn resolution ─────────────────────────────────────────────────
+function animateAndResolveTurn() {
+  const flashMoveSet = new Set();
+  const flashAtkSet  = new Set();
+  for (const owner of [OWNER_P1, OWNER_P2]) {
+    for (const p of plans[owner]) {
+      if (p.kind === 'move')   flashMoveSet.add(key(p.to.r, p.to.c));
+      if (p.kind === 'attack') flashAtkSet.add(key(p.to.r,  p.to.c));
+    }
+  }
+  render(flashMoveSet, flashAtkSet);
+  setTimeout(resolveTurn, 500);
+}
+
 // ─── Turn Resolution ──────────────────────────────────────────────────────────
 function resolveTurn() {
-  // 1. Movement phase
-  resolveMovement();
+  const summary = { moves: 0, attacks: 0, kills: 0, mutual: 0 };
 
-  // 2. Attack phase
-  resolveAttacks();
-
-  // 3. Spawn phase
+  resolveMovement(summary);
+  resolveAttacks(summary);
   resolveSpawn();
 
-  // Advance turn
   turnNum++;
-  plans = { [OWNER_P1]: [], [OWNER_P2]: [] };
-  phase = PHASE_P1;
-  selected = null;
-  pendingAction = null;
+  plans          = { [OWNER_P1]: [], [OWNER_P2]: [] };
+  phase          = PHASE_P1;
+  selected       = null;
+  pendingAction  = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
 
   render();
   updateHUD();
   updatePhaseLabel();
   hideTileInfo();
 
-  // Show pass screen for next turn's P1 setup
   document.getElementById('pass-title').textContent = `Turn ${turnNum} — Player 1's Planning Phase`;
-  document.getElementById('pass-msg').textContent   = 'Results resolved! Now it is Player 1\'s turn to plan.';
-  document.getElementById('pass-overlay').classList.remove('hidden');
+  document.getElementById('pass-msg').textContent   = "Results resolved! Now it is Player 1's turn to plan.";
 
+  const summaryEl = document.getElementById('resolution-summary');
+  summaryEl.classList.remove('hidden');
+  document.getElementById('summary-moves').textContent   = summary.moves;
+  document.getElementById('summary-attacks').textContent = summary.attacks;
+  document.getElementById('summary-kills').textContent   = summary.kills;
+  document.getElementById('summary-mutual').textContent  = summary.mutual;
+
+  document.getElementById('pass-overlay').classList.remove('hidden');
   checkWin();
 }
 
-function resolveMovement() {
-  // Process all moves simultaneously: collect movements, then apply
+function resolveMovement(summary) {
   const moves = [];
-  for (const owner of [OWNER_P1, OWNER_P2]) {
+  for (const owner of [OWNER_P1, OWNER_P2])
     for (const p of plans[owner]) {
       if (p.kind !== 'move') continue;
-      const fromTile = tiles[p.from.r][p.from.c];
-      if (fromTile.owner !== owner || fromTile.troops === 0) continue;
+      const ft = tiles[p.from.r][p.from.c];
+      if (ft.owner !== owner || ft.troops === 0) continue;
       moves.push({ owner, from: p.from, to: p.to });
+    }
+
+  // Detect contested destinations (two different owners moving to same empty tile)
+  const destOwners = {};
+  for (const mv of moves) {
+    const k = key(mv.to.r, mv.to.c);
+    if (!destOwners[k]) destOwners[k] = [];
+    if (!destOwners[k].includes(mv.owner)) destOwners[k].push(mv.owner);
+  }
+  const contestedKeys = new Set();
+  for (const k in destOwners) {
+    const numericKey = Number(k);
+    const { r, c } = decodeKey(numericKey);
+    if (destOwners[k].length >= 2 && tiles[r][c].owner === OWNER_NONE) {
+      contestedKeys.add(numericKey);
+      addLog(`Contested move to (${r},${c})! Neither move succeeds.`);
     }
   }
 
-  // Apply moves: move 1 troop from each "from" to "to"
-  // Collect destination increments to handle simultaneous arrival
-  const arrivals = {}; // key -> { owner, count }
+  const arrivals = {};
   for (const mv of moves) {
-    const fromTile = tiles[mv.from.r][mv.from.c];
-    // Validate destination is still valid
     const toTile = tiles[mv.to.r][mv.to.c];
     if (toTile.type === TILE_WALL) continue;
-    // Can't move into enemy tile
     if (toTile.owner !== OWNER_NONE && toTile.owner !== mv.owner) continue;
+    const k = key(mv.to.r, mv.to.c);
+    if (contestedKeys.has(k)) continue;
 
+    const fromTile = tiles[mv.from.r][mv.from.c];
     fromTile.troops = Math.max(0, fromTile.troops - 1);
     if (fromTile.troops === 0) fromTile.owner = OWNER_NONE;
 
-    const k = key(mv.to.r, mv.to.c);
     if (!arrivals[k]) arrivals[k] = { owner: mv.owner, r: mv.to.r, c: mv.to.c, count: 0 };
     arrivals[k].count++;
     addLog(`P${mv.owner} moved (${mv.from.r},${mv.from.c})→(${mv.to.r},${mv.to.c})`);
+    summary.moves++;
   }
 
   for (const k in arrivals) {
     const { owner, r, c, count } = arrivals[k];
     const tile = tiles[r][c];
-    if (tile.owner === OWNER_NONE) {
-      tile.owner  = owner;
-      tile.troops = count;
-    } else if (tile.owner === owner) {
-      tile.troops += count;
-    }
-    // enemy-occupied: movement validation above prevents this case
+    if (tile.owner === OWNER_NONE) { tile.owner = owner; tile.troops = count; }
+    else if (tile.owner === owner) { tile.troops += count; }
   }
 }
 
-function resolveAttacks() {
-  // Collect all attacks first, then apply damage simultaneously
+function resolveAttacks(summary) {
   const attacks = [];
-  for (const owner of [OWNER_P1, OWNER_P2]) {
+  for (const owner of [OWNER_P1, OWNER_P2])
     for (const p of plans[owner]) {
       if (p.kind !== 'attack') continue;
-      const fromTile = tiles[p.from.r][p.from.c];
-      if (fromTile.owner !== owner || fromTile.troops === 0) continue;
+      const ft = tiles[p.from.r][p.from.c];
+      if (ft.owner !== owner || ft.troops === 0) continue;
       attacks.push({ owner, from: p.from, to: p.to });
     }
-  }
 
-  // Check preemptive attack rule: if both players attack the same tile simultaneously,
-  // both attacking troops lose 1 unit (mutual strike)
-  const attackMap = {}; // key(to) -> [attack list]
+  // Mutual strike detection
+  const attackMap = {};
   for (const atk of attacks) {
     const k = key(atk.to.r, atk.to.c);
     if (!attackMap[k]) attackMap[k] = [];
     attackMap[k].push(atk);
   }
-
-  // Mutual strike: if P1 attacks tile X and P2 attacks tile Y, and P2 attacks from X simultaneously
-  // i.e., if P1 attacks P2's tile A while P2 attacks P1's tile B that's the same — check per tile
-  // The rule says: "both players attack the same tile simultaneously → both lose 1 troop"
-  // Interpretation: if P1 attacks tile T and P2 ALSO attacks tile T at the same time, penalty on both attackers.
-
-  const penaltyTiles = new Set(); // tiles of attackers that receive the mutual strike penalty
+  const penaltyTiles = new Set();
   for (const k in attackMap) {
-    const list = attackMap[k];
-    if (list.length >= 2) {
-      // Both players attacked the same target
-      for (const atk of list) {
+    if (attackMap[k].length >= 2) {
+      for (const atk of attackMap[k]) {
         penaltyTiles.add(key(atk.from.r, atk.from.c));
         addLog(`Mutual strike on (${atk.to.r},${atk.to.c})! Attacker at (${atk.from.r},${atk.from.c}) loses 1.`);
+        summary.mutual++;
       }
     }
   }
 
-  // Apply damage to targets
-  const damage = {}; // key -> amount
+  // Apply damage
+  const damage = {};
   for (const atk of attacks) {
+    const targetTile = tiles[atk.to.r][atk.to.c];
+    // Fortification bonus: Hill with 3+ troops has 50% miss chance
+    if (targetTile.type === TILE_HILL && targetTile.troops >= 3 && Math.random() < FORTIFICATION_MISS_CHANCE) {
+      addLog(`Fortification! Attack on (${atk.to.r},${atk.to.c}) missed!`);
+      continue;
+    }
     const k = key(atk.to.r, atk.to.c);
     damage[k] = (damage[k] || 0) + 1;
     addLog(`P${atk.owner} attacks (${atk.from.r},${atk.from.c})→(${atk.to.r},${atk.to.c})`);
+    summary.attacks++;
   }
 
   for (const k in damage) {
     const { r, c } = decodeKey(Number(k));
-    const tile = tiles[r][c];
-    tile.troops = Math.max(0, tile.troops - damage[k]);
+    const tile      = tiles[r][c];
+    const prev      = tile.troops;
+    tile.troops     = Math.max(0, tile.troops - damage[k]);
+    summary.kills  += prev - tile.troops;
     if (tile.troops === 0) tile.owner = OWNER_NONE;
   }
 
-  // Apply mutual strike penalties to attackers
+  // Mutual strike penalty on attackers
   for (const k of penaltyTiles) {
     const { r, c } = decodeKey(k);
-    const tile = tiles[r][c];
-    tile.troops = Math.max(0, tile.troops - 1);
+    const tile      = tiles[r][c];
+    const prev      = tile.troops;
+    tile.troops     = Math.max(0, tile.troops - 1);
+    summary.kills  += prev - tile.troops;
     if (tile.troops === 0) tile.owner = OWNER_NONE;
   }
 }
 
 function resolveSpawn() {
-  for (let r = 0; r < GRID; r++) {
+  for (let r = 0; r < GRID; r++)
     for (let c = 0; c < GRID; c++) {
       const tile = tiles[r][c];
-      if (tile.owner !== OWNER_NONE && tile.troops > 0) {
-        tile.troops++;
-      }
+      if (tile.owner !== OWNER_NONE && tile.troops > 0)
+        tile.troops = Math.min(MAX_TROOPS, tile.troops + 1);
     }
-  }
 }
 
 function checkWin() {
@@ -640,13 +917,9 @@ function checkWin() {
       if (tiles[r][c].owner === OWNER_P2) p2c++;
     }
   updateHUD();
-  if (p1c === 0 && p2c === 0) {
-    showWin('Draw!');
-  } else if (p1c === 0) {
-    showWin('Player 2 Wins!');
-  } else if (p2c === 0) {
-    showWin('Player 1 Wins!');
-  }
+  if      (p1c === 0 && p2c === 0) showWin('Draw!');
+  else if (p1c === 0)              showWin('Player 2 Wins!');
+  else if (p2c === 0)              showWin('Player 1 Wins!');
 }
 
 function showWin(msg) {
