@@ -23,11 +23,19 @@
         </div>
       </header>
 
-      <!-- Pass-and-play overlay -->
       <div id="pass-overlay" class="hidden">
         <div class="pass-card">
           <h2 id="pass-title">Pass to Player 2</h2>
           <p id="pass-msg">Player 1 has finished planning. Hand the device to Player 2.</p>
+          <div id="resolution-summary" class="hidden">
+            <h3>Resolution Summary</h3>
+            <div class="summary-grid">
+              <span>Moves executed</span><span id="summary-moves">0</span>
+              <span>Attacks landed</span><span id="summary-attacks">0</span>
+              <span>Troops killed</span><span id="summary-kills">0</span>
+              <span>Mutual strikes</span><span id="summary-mutual">0</span>
+            </div>
+          </div>
           <button id="pass-btn">Ready</button>
         </div>
       </div>
@@ -54,6 +62,7 @@
                 <button id="btn-move" class="action-btn">Plan Move</button>
                 <button id="btn-attack" class="action-btn">Plan Attack</button>
                 <button id="btn-cancel" class="action-btn secondary">Cancel</button>
+                <button id="btn-undo" class="action-btn secondary">Undo</button>
               </div>
             </div>
             <div id="done-area">

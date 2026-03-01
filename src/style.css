@@ -6,22 +6,25 @@
 }
 
 :root {
-  --p1-color: #3b6ed6;
-  --p2-color: #cc3333;
-  --hill-bg:  #2d6a2d;
-  --wall-bg:  #888888;
-  --empty-bg: #d4c9a8;
-  --panel-bg: #1a1a2e;
-  --surface:  #16213e;
-  --accent:   #e2b04a;
-  --text:     #e8e8e8;
-  --muted:    #999;
+  --p1-color:  #3b6ed6;
+  --p2-color:  #cc3333;
+  --hill-bg:   #2d6a2d;
+  --wall-bg:   #888888;
+  --empty-bg:  #d4c9a8;
+  --bg:        #0f172a;
+  --panel-bg:  #1a1a2e;
+  --surface:   #16213e;
+  --surface2:  #0d1526;
+  --accent:    #e2b04a;
+  --accent2:   #f0c96a;
+  --text:      #e8e8e8;
+  --muted:     #8a96a8;
   font-size: 16px;
 }
 
 html, body {
   height: 100%;
-  background: var(--panel-bg);
+  background: var(--bg);
   color: var(--text);
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   overflow-x: hidden;
@@ -39,14 +42,16 @@ header {
   padding: 8px 12px;
   border-bottom: 2px solid var(--accent);
   flex-shrink: 0;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
 }
 
 header h1 {
   font-size: 1.3rem;
-  letter-spacing: 2px;
+  letter-spacing: 3px;
   color: var(--accent);
   text-align: center;
   text-transform: uppercase;
+  text-shadow: 0 0 18px rgba(226,176,74,0.45);
 }
 
 #hud {
@@ -71,8 +76,8 @@ header h1 {
   letter-spacing: 1px;
 }
 
-.player-info.p1 .label { color: var(--p1-color); }
-.player-info.p2 .label { color: var(--p2-color); }
+.player-info.p1 .label { color: var(--p1-color); text-shadow: 0 0 10px rgba(59,110,214,0.5); }
+.player-info.p2 .label { color: var(--p2-color); text-shadow: 0 0 10px rgba(204,51,51,0.5); }
 
 #turn-display {
   font-size: 0.9rem;
@@ -104,6 +109,7 @@ header h1 {
   image-rendering: pixelated;
   border: 2px solid var(--accent);
   border-radius: 4px;
+  box-shadow: 0 0 24px rgba(226,176,74,0.18);
   touch-action: none;
   max-width: 100%;
   max-height: calc(100dvh - 120px);
@@ -114,7 +120,7 @@ header h1 {
   width: 220px;
   flex-shrink: 0;
   background: var(--surface);
-  border-left: 2px solid #2a2a4a;
+  border-left: 2px solid #1e2a42;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -124,10 +130,11 @@ header h1 {
 
 /* ── Action Panel ─────────────────────────────────────────────────────────── */
 #action-panel {
-  background: #0f0f22;
-  border-radius: 6px;
+  background: var(--surface2);
+  border-radius: 8px;
   padding: 10px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid #1e2a42;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
 #phase-label {
@@ -159,25 +166,36 @@ header h1 {
   padding: 6px 10px;
   font-size: 0.8rem;
   font-weight: 600;
-  border: none;
-  border-radius: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   cursor: pointer;
   background: var(--p1-color);
   color: #fff;
-  transition: opacity 0.15s, background 0.15s;
+  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
 }
 
 .action-btn.secondary {
-  background: #555;
+  background: #2e3a52;
+  border-color: #3a4a62;
 }
 
 .action-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.32;
   cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 .action-btn:not(:disabled):hover {
-  opacity: 0.85;
+  opacity: 0.88;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+}
+
+.action-btn:not(:disabled):active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
 
 #done-area {
@@ -190,24 +208,34 @@ header h1 {
   font-size: 0.9rem;
   font-weight: 700;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  background: var(--accent);
-  color: #1a1a2e;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #0f172a;
   text-transform: uppercase;
   letter-spacing: 1px;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+  box-shadow: 0 2px 10px rgba(226,176,74,0.3);
 }
 
-.done-btn:hover { opacity: 0.85; }
+.done-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(226,176,74,0.45);
+}
+
+.done-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 6px rgba(226,176,74,0.2);
+}
 
 /* ── Event Log ────────────────────────────────────────────────────────────── */
 #log-container {
   flex: 1;
-  background: #0f0f22;
-  border-radius: 6px;
+  background: var(--surface2);
+  border-radius: 8px;
   padding: 8px;
-  border: 1px solid #2a2a4a;
+  border: 1px solid #1e2a42;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -232,7 +260,7 @@ header h1 {
 }
 
 #event-log li {
-  border-bottom: 1px solid #1e1e36;
+  border-bottom: 1px solid #1a2234;
   padding: 2px 0;
 }
 
@@ -246,52 +274,63 @@ header h1 {
   padding: 8px;
   font-size: 0.8rem;
   font-weight: 700;
-  border: 1px solid #555;
-  border-radius: 4px;
+  border: 1px solid #3a4a62;
+  border-radius: 6px;
   cursor: pointer;
   background: transparent;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 1px;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
   flex-shrink: 0;
 }
 
 #new-game-btn:hover {
   color: var(--text);
-  border-color: var(--text);
+  border-color: var(--accent);
+  background: rgba(226,176,74,0.07);
 }
 
-/* ── Pass Overlay ─────────────────────────────────────────────────────────── */
+/* ── Overlays ─────────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }
 
 #pass-overlay,
 #win-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(5, 10, 22, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
 }
 
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(-18px) scale(0.95); }
+  to   { opacity: 1; transform: none; }
+}
+
 .pass-card,
 .win-card {
   background: var(--surface);
   border: 2px solid var(--accent);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 32px 40px;
   text-align: center;
-  max-width: 360px;
+  max-width: 380px;
   width: 90%;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.55), 0 0 30px rgba(226,176,74,0.12);
+  animation: cardIn 0.28s cubic-bezier(0.22,1,0.36,1);
 }
 
 .pass-card h2,
 .win-card h2 {
-  font-size: 1.4rem;
+  font-size: 1.5rem;
   color: var(--accent);
-  margin-bottom: 12px;
+  margin-bottom: 10px;
+  text-shadow: 0 0 20px rgba(226,176,74,0.4);
 }
 
 .pass-card p {
@@ -301,23 +340,70 @@ header h1 {
   line-height: 1.5;
 }
 
+/* ── Resolution Summary ───────────────────────────────────────────────────── */
+#resolution-summary {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid #2a3a52;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+#resolution-summary h3 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--accent);
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  font-size: 0.8rem;
+}
+
+.summary-grid span:nth-child(odd) {
+  color: var(--muted);
+}
+
+.summary-grid span:nth-child(even) {
+  color: var(--text);
+  font-weight: 700;
+  text-align: right;
+}
+
+/* ── Pass / Win Buttons ───────────────────────────────────────────────────── */
 #pass-btn,
 #new-game-win-btn {
   padding: 10px 28px;
   font-size: 1rem;
   font-weight: 700;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
-  background: var(--accent);
-  color: #1a1a2e;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #0f172a;
   text-transform: uppercase;
   letter-spacing: 1px;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+  box-shadow: 0 3px 12px rgba(226,176,74,0.35);
 }
 
 #pass-btn:hover,
-#new-game-win-btn:hover { opacity: 0.85; }
+#new-game-win-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 18px rgba(226,176,74,0.5);
+}
+
+#pass-btn:active,
+#new-game-win-btn:active {
+  transform: translateY(0);
+}
 
 /* ── Responsive: small screens go vertical ────────────────────────────────── */
 @media (max-width: 600px) {
@@ -328,10 +414,10 @@ header h1 {
   #sidebar {
     width: 100%;
     border-left: none;
-    border-top: 2px solid #2a2a4a;
+    border-top: 2px solid #1e2a42;
     flex-direction: row;
     flex-wrap: wrap;
-    max-height: 200px;
+    max-height: 210px;
     overflow-y: auto;
   }
 
@@ -353,6 +439,11 @@ header h1 {
   }
 
   #game-canvas {
-    max-height: calc(100dvh - 320px);
+    max-height: calc(100dvh - 330px);
+  }
+
+  .pass-card,
+  .win-card {
+    padding: 24px 20px;
   }
 }
