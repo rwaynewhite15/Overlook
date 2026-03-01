@@ -34,7 +34,7 @@ let validMoveTiles = new Set();
 let validAtkTiles  = new Set();
 let tooltipTile    = null;
 let zoomLevel      = 1;
-let aiEnabled      = false;
+let aiDifficulty  = 'off';
 
 // Canvas
 let canvas, ctx, cellSize;
@@ -117,10 +117,11 @@ function init() {
   document.getElementById('pass-btn').addEventListener('click',   onPassReady);
   document.getElementById('new-game-btn').addEventListener('click',     newGame);
   document.getElementById('new-game-win-btn').addEventListener('click', newGame);
-  document.getElementById('ai-toggle').addEventListener('change', e => {
-    aiEnabled = e.target.checked;
+  document.getElementById('ai-difficulty').addEventListener('change', e => {
+    aiDifficulty = e.target.value;
     updatePhaseLabel();
   });
+  document.addEventListener('keydown', onKeyDown);
 }
 
 function newGame() {
@@ -406,6 +407,10 @@ function drawCell(r, c, moveFromSet, moveToSet, atkFromSet, atkToSet, flashMoves
   // 8. Troop badge
   if (tile.type !== TILE_WALL && tile.troops > 0)
     drawTroopBadge(x, y, cs, tile.troops, tile.owner);
+
+  // 9. Spawn counter (dots near top of tile)
+  if (tile.type !== TILE_WALL && tile.owner !== OWNER_NONE && tile.troops > 0)
+    drawSpawnCounter(x, y, cs, tile.ownedTurns);
 }
 
 function drawTroopBadge(x, y, cs, troops, owner) {
@@ -437,6 +442,23 @@ function drawTroopBadge(x, y, cs, troops, owner) {
   ctx.textBaseline = 'middle';
   ctx.fillText(troops.toString(), x + cs * 0.5, by + bh * 0.5);
 }
+
+function drawSpawnCounter(x, y, cs, ownedTurns) {
+  const dotR  = Math.max(2, Math.floor(cs * 0.07));
+  const gap   = dotR * 2.8;
+  const total = SPAWN_TURNS - 1;
+  const filled = ownedTurns % SPAWN_TURNS;
+  const totalW = total * gap - gap * 0.4;
+  let dx = x + cs * 0.5 - totalW * 0.5;
+  const dy = y + dotR + Math.max(2, Math.floor(cs * 0.06));
+  for (let i = 0; i < total; i++) {
+    ctx.beginPath();
+    ctx.arc(dx + i * gap, dy, dotR, 0, Math.PI * 2);
+    ctx.fillStyle = i < filled ? 'rgba(255,220,80,0.92)' : 'rgba(255,255,255,0.28)';
+    ctx.fill();
+  }
+}
+
 
 function drawTooltip() {
   const { r, c } = tooltipTile;
@@ -496,10 +518,12 @@ function updatePhaseLabel() {
   if (phase === PHASE_P1) {
     document.getElementById('phase-label').textContent = "Player 1's Turn — Select a tile";
   } else {
-    document.getElementById('phase-label').textContent = aiEnabled
-      ? "AI (Player 2) is planning…"
+    const diffLabel = aiDifficulty !== 'off'
+      ? `AI (${aiDifficulty.charAt(0).toUpperCase() + aiDifficulty.slice(1)}) is planning…`
       : "Player 2's Turn — Select a tile";
+    document.getElementById('phase-label').textContent = diffLabel;
   }
+  updatePlanCounter();
 }
 
 function showTileInfo(r, c) {
@@ -528,14 +552,29 @@ function clearLog() {
   document.getElementById('event-log').innerHTML = '';
 }
 
-function addLog(msg) {
-  eventLog.unshift(msg);
+function updatePlanCounter() {
+  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentPlans = plans[currentOwner];
+  const moves   = currentPlans.filter(p => p.kind === 'move').length;
+  const attacks = currentPlans.filter(p => p.kind === 'attack').length;
+  const el = document.getElementById('plan-counter');
+  if (moves === 0 && attacks === 0) {
+    el.classList.add('hidden');
+  } else {
+    el.classList.remove('hidden');
+    el.textContent = `Plans: ${moves} move(s), ${attacks} attack(s)`;
+  }
+}
+
+function addLog(msg, cssClass) {
+  eventLog.unshift({ msg, cssClass: cssClass || '' });
   if (eventLog.length > 10) eventLog.pop();
   const ul = document.getElementById('event-log');
   ul.innerHTML = '';
-  for (const m of eventLog) {
+  for (const entry of eventLog) {
     const li = document.createElement('li');
-    li.textContent = m;
+    li.textContent = entry.msg;
+    if (entry.cssClass) li.className = entry.cssClass;
     ul.appendChild(li);
   }
 }
@@ -635,6 +674,26 @@ function onBtnUndo() {
   updatePhaseLabel();
 }
 
+function onKeyDown(e) {
+  // Don't trigger shortcuts when typing in input elements
+  if (e.target.matches('input, select, textarea')) return;
+  const key = e.key.toUpperCase();
+  if (key === 'M') {
+    const btn = document.getElementById('btn-move');
+    if (!btn.disabled) onBtnMove();
+  } else if (key === 'A') {
+    const btn = document.getElementById('btn-attack');
+    if (!btn.disabled) onBtnAttack();
+  } else if (e.key === 'Escape') {
+    onBtnCancel();
+  } else if (key === 'U') {
+    const btn = document.getElementById('btn-undo');
+    if (!btn.disabled) onBtnUndo();
+  } else if (e.key === 'Enter' || key === 'D') {
+    onBtnDone();
+  }
+}
+
 function getValidMoveTiles(r, c) {
   const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
   const result = new Set();
@@ -672,7 +731,7 @@ function tryPlanMove(r, c) {
   } else {
     plans[currentOwner] = plans[currentOwner].filter(p => !(p.kind === 'move' && p.from.r === from.r && p.from.c === from.c));
     plans[currentOwner].push({ kind: 'move', from: { r: from.r, c: from.c }, to: { r, c } });
-    addLog(`P${currentOwner} plans move (${from.r},${from.c})→(${r},${c})`);
+    addLog(`P${currentOwner} plans move (${from.r},${from.c})→(${r},${c})`, 'log-move');
     playSound('move');
     selected       = null;
     hideTileInfo();
@@ -697,7 +756,7 @@ function tryPlanAttack(r, c) {
   } else {
     plans[currentOwner] = plans[currentOwner].filter(p => !(p.kind === 'attack' && p.from.r === from.r && p.from.c === from.c));
     plans[currentOwner].push({ kind: 'attack', from: { r: from.r, c: from.c }, to: { r, c } });
-    addLog(`P${currentOwner} plans attack (${from.r},${from.c})→(${r},${c})`);
+    addLog(`P${currentOwner} plans attack (${from.r},${from.c})→(${r},${c})`, 'log-attack');
     playSound('attack');
     selected       = null;
     hideTileInfo();
@@ -741,7 +800,7 @@ function onBtnDone() {
     validAtkTiles  = new Set();
     render();
     hideTileInfo();
-    if (aiEnabled) {
+    if (aiDifficulty !== 'off') {
       makeAIPlans();
       animateAndResolveTurn();
     } else {
@@ -749,7 +808,7 @@ function onBtnDone() {
       document.getElementById('pass-msg').textContent   = 'Player 1 has finished planning. Hand the device to Player 2.';
       document.getElementById('resolution-summary').classList.add('hidden');
       document.getElementById('pass-overlay').classList.remove('hidden');
-      document.getElementById('ai-toggle').disabled = true;
+      document.getElementById('ai-difficulty').disabled = true;
       phase = PHASE_P2;
     }
   } else {
@@ -760,7 +819,7 @@ function onBtnDone() {
 
 function onPassReady() {
   document.getElementById('pass-overlay').classList.add('hidden');
-  document.getElementById('ai-toggle').disabled = false;
+  document.getElementById('ai-difficulty').disabled = false;
   selected       = null;
   pendingAction  = null;
   validMoveTiles = new Set();
@@ -807,7 +866,7 @@ function resolveTurn() {
 
   document.getElementById('pass-title').textContent = `Turn ${turnNum} — Player 1's Planning Phase`;
   document.getElementById('pass-msg').textContent   = "Results resolved! Now it is Player 1's turn to plan.";
-  document.getElementById('ai-toggle').disabled = false;
+  document.getElementById('ai-difficulty').disabled = false;
 
   const summaryEl = document.getElementById('resolution-summary');
   summaryEl.classList.remove('hidden');
@@ -861,7 +920,7 @@ function resolveMovement(summary) {
 
     if (!arrivals[k]) arrivals[k] = { owner: mv.owner, r: mv.to.r, c: mv.to.c, count: 0 };
     arrivals[k].count++;
-    addLog(`P${mv.owner} moved (${mv.from.r},${mv.from.c})→(${mv.to.r},${mv.to.c})`);
+    addLog(`P${mv.owner} moved (${mv.from.r},${mv.from.c})→(${mv.to.r},${mv.to.c})`, 'log-move');
     summary.moves++;
   }
 
@@ -895,7 +954,7 @@ function resolveAttacks(summary) {
     if (attackMap[k].length >= 2) {
       for (const atk of attackMap[k]) {
         penaltyTiles.add(key(atk.from.r, atk.from.c));
-        addLog(`Mutual strike on (${atk.to.r},${atk.to.c})! Attacker at (${atk.from.r},${atk.from.c}) loses 1.`);
+        addLog(`Mutual strike on (${atk.to.r},${atk.to.c})! Attacker at (${atk.from.r},${atk.from.c}) loses 1.`, 'log-mutual');
         summary.mutual++;
       }
     }
@@ -907,12 +966,12 @@ function resolveAttacks(summary) {
     const targetTile = tiles[atk.to.r][atk.to.c];
     // Fortification bonus: Hill with 3+ troops has 50% miss chance
     if (targetTile.type === TILE_HILL && targetTile.troops >= 3 && Math.random() < FORTIFICATION_MISS_CHANCE) {
-      addLog(`Fortification! Attack on (${atk.to.r},${atk.to.c}) missed!`);
+      addLog(`Fortification! Attack on (${atk.to.r},${atk.to.c}) missed!`, 'log-spawn');
       continue;
     }
     const k = key(atk.to.r, atk.to.c);
     damage[k] = (damage[k] || 0) + 1;
-    addLog(`P${atk.owner} attacks (${atk.from.r},${atk.from.c})→(${atk.to.r},${atk.to.c})`);
+    addLog(`P${atk.owner} attacks (${atk.from.r},${atk.from.c})→(${atk.to.r},${atk.to.c})`, 'log-attack');
     summary.attacks++;
   }
 
@@ -952,6 +1011,44 @@ function resolveSpawn() {
 
 // ─── AI Opponent ──────────────────────────────────────────────────────────────
 function makeAIPlans() {
+  if      (aiDifficulty === 'easy')   makeAIPlansEasy();
+  else if (aiDifficulty === 'medium') makeAIPlansMedium();
+  else if (aiDifficulty === 'hard')   makeAIPlansHard();
+}
+
+// Helper: collect moveable adjacent tiles for a P2 unit at (r,c)
+function getAIMoveOptions(r, c) {
+  const moveable = [];
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (nr < 0 || nr >= GRID || nc < 0 || nc >= GRID) continue;
+    if (tiles[nr][nc].type === TILE_WALL) continue;
+    if (tiles[nr][nc].owner !== OWNER_NONE && tiles[nr][nc].owner !== OWNER_P2) continue;
+    moveable.push({ r: nr, c: nc });
+  }
+  return moveable;
+}
+
+// Helper: collect P1 tiles
+function getP1Tiles() {
+  const p1Tiles = [];
+  for (let pr = 0; pr < GRID; pr++)
+    for (let pc = 0; pc < GRID; pc++)
+      if (tiles[pr][pc].owner === OWNER_P1) p1Tiles.push({ r: pr, c: pc });
+  return p1Tiles;
+}
+
+// Helper: collect hill tiles not owned by P2
+function getHillTiles() {
+  const hills = [];
+  for (let hr = 0; hr < GRID; hr++)
+    for (let hc = 0; hc < GRID; hc++)
+      if (tiles[hr][hc].type === TILE_HILL && tiles[hr][hc].owner !== OWNER_P2)
+        hills.push({ r: hr, c: hc });
+  return hills;
+}
+
+function makeAIPlansEasy() {
   plans[OWNER_P2] = [];
   for (let r = 0; r < GRID; r++) {
     for (let c = 0; c < GRID; c++) {
@@ -959,7 +1056,7 @@ function makeAIPlans() {
       if (tile.owner !== OWNER_P2 || tile.troops === 0) continue;
       if (plans[OWNER_P2].some(p => p.from.r === r && p.from.c === c)) continue;
 
-      // Prefer attacking P1 tiles within range
+      // Prefer attacking P1 tiles within range (random selection)
       const atkTargets = [];
       for (let tr = 0; tr < GRID; tr++)
         for (let tc = 0; tc < GRID; tc++)
@@ -968,26 +1065,15 @@ function makeAIPlans() {
       if (atkTargets.length > 0) {
         const t = atkTargets[Math.floor(Math.random() * atkTargets.length)];
         plans[OWNER_P2].push({ kind: 'attack', from: { r, c }, to: t });
-        addLog(`AI plans attack (${r},${c})→(${t.r},${t.c})`);
+        addLog(`AI plans attack (${r},${c})→(${t.r},${t.c})`, 'log-attack');
         continue;
       }
 
-      // Otherwise move toward the nearest P1 tile
-      const moveable = [];
-      for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
-        const nr = r + dr, nc = c + dc;
-        if (nr < 0 || nr >= GRID || nc < 0 || nc >= GRID) continue;
-        if (tiles[nr][nc].type === TILE_WALL) continue;
-        if (tiles[nr][nc].owner !== OWNER_NONE && tiles[nr][nc].owner !== OWNER_P2) continue;
-        moveable.push({ r: nr, c: nc });
-      }
+      // Otherwise move toward the nearest P1 tile (greedy)
+      const moveable = getAIMoveOptions(r, c);
       if (moveable.length === 0) continue;
 
-      const p1Tiles = [];
-      for (let pr = 0; pr < GRID; pr++)
-        for (let pc = 0; pc < GRID; pc++)
-          if (tiles[pr][pc].owner === OWNER_P1) p1Tiles.push({ r: pr, c: pc });
-
+      const p1Tiles = getP1Tiles();
       let best = moveable[Math.floor(Math.random() * moveable.length)];
       if (p1Tiles.length > 0) {
         let minDist = Infinity;
@@ -997,10 +1083,177 @@ function makeAIPlans() {
         }
       }
       plans[OWNER_P2].push({ kind: 'move', from: { r, c }, to: best });
-      addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`);
+      addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`, 'log-move');
     }
   }
 }
+
+function makeAIPlansMedium() {
+  plans[OWNER_P2] = [];
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const tile = tiles[r][c];
+      if (tile.owner !== OWNER_P2 || tile.troops === 0) continue;
+      if (plans[OWNER_P2].some(p => p.from.r === r && p.from.c === c)) continue;
+
+      // Occasionally hold position on tiles about to spawn
+      if (tile.ownedTurns >= SPAWN_TURNS - 1 && Math.random() < 0.5) continue;
+
+      // Prefer attacking weakest (fewest troops) P1 tile in range
+      const atkTargets = [];
+      for (let tr = 0; tr < GRID; tr++)
+        for (let tc = 0; tc < GRID; tc++)
+          if (tiles[tr][tc].owner === OWNER_P1 && canAttack(r, c, tr, tc))
+            atkTargets.push({ r: tr, c: tc, troops: tiles[tr][tc].troops });
+      if (atkTargets.length > 0) {
+        // Shuffle first for random tie-breaking, then sort stably
+        for (let i = atkTargets.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [atkTargets[i], atkTargets[j]] = [atkTargets[j], atkTargets[i]];
+        }
+        atkTargets.sort((a, b) => a.troops - b.troops);
+        const t = atkTargets[0];
+        plans[OWNER_P2].push({ kind: 'attack', from: { r, c }, to: { r: t.r, c: t.c } });
+        addLog(`AI plans attack (${r},${c})→(${t.r},${t.c})`, 'log-attack');
+        continue;
+      }
+
+      // Move: prefer hill tiles, otherwise toward nearest P1 tile
+      const moveable = getAIMoveOptions(r, c);
+      if (moveable.length === 0) continue;
+
+      const hillTargets = moveable.filter(m => tiles[m.r][m.c].type === TILE_HILL);
+      if (hillTargets.length > 0) {
+        const best = hillTargets[Math.floor(Math.random() * hillTargets.length)];
+        plans[OWNER_P2].push({ kind: 'move', from: { r, c }, to: best });
+        addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`, 'log-move');
+        continue;
+      }
+
+      const p1Tiles = getP1Tiles();
+      let best = moveable[Math.floor(Math.random() * moveable.length)];
+      if (p1Tiles.length > 0) {
+        let minDist = Infinity;
+        for (const mt of moveable) {
+          const dist = Math.min(...p1Tiles.map(pt => manhattan(mt.r, mt.c, pt.r, pt.c)));
+          if (dist < minDist || (dist === minDist && Math.random() < 0.5)) { minDist = dist; best = mt; }
+        }
+      }
+      plans[OWNER_P2].push({ kind: 'move', from: { r, c }, to: best });
+      addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`, 'log-move');
+    }
+  }
+}
+
+function makeAIPlansHard() {
+  plans[OWNER_P2] = [];
+
+  // Pre-compute attack targets count per P1 tile (for focus fire)
+  const focusTargets = {};
+  // First pass: find the best killable targets (troops === 1) and weakest targets
+  const p1TilesAll = [];
+  for (let tr = 0; tr < GRID; tr++)
+    for (let tc = 0; tc < GRID; tc++)
+      if (tiles[tr][tc].owner === OWNER_P1) p1TilesAll.push({ r: tr, c: tc, troops: tiles[tr][tc].troops });
+
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const tile = tiles[r][c];
+      if (tile.owner !== OWNER_P2 || tile.troops === 0) continue;
+      if (plans[OWNER_P2].some(p => p.from.r === r && p.from.c === c)) continue;
+
+      // Spawn awareness: never move a unit off a tile with ownedTurns >= SPAWN_TURNS - 1
+      const aboutToSpawn = tile.ownedTurns >= SPAWN_TURNS - 1;
+
+      // Retreat logic: if this P2 tile has only 1 troop and is adjacent to a strong P1 tile (3+ troops)
+      if (!aboutToSpawn && tile.troops === 1) {
+        const strongAdjP1 = p1TilesAll.some(pt =>
+          manhattan(r, c, pt.r, pt.c) === 1 && pt.troops >= 3
+        );
+        if (strongAdjP1) {
+          // Move away from that P1 tile
+          const moveable = getAIMoveOptions(r, c);
+          if (moveable.length > 0) {
+            // Move toward a hill if possible, otherwise away from P1 tiles
+            const hillOpts = moveable.filter(m => tiles[m.r][m.c].type === TILE_HILL);
+            const pool = hillOpts.length > 0 ? hillOpts : moveable;
+            // Choose the option furthest from the nearest P1 tile
+            let best = pool[0];
+            let maxDist = -Infinity;
+            for (const mt of pool) {
+              const dist = p1TilesAll.length > 0
+                ? Math.min(...p1TilesAll.map(pt => manhattan(mt.r, mt.c, pt.r, pt.c)))
+                : 0;
+              if (dist > maxDist) { maxDist = dist; best = mt; }
+            }
+            plans[OWNER_P2].push({ kind: 'move', from: { r, c }, to: best });
+            addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`, 'log-move');
+            continue;
+          }
+        }
+      }
+
+      // Attack: focus fire on killable (troops===1) targets, then weakest
+      const atkTargets = [];
+      for (const pt of p1TilesAll)
+        if (canAttack(r, c, pt.r, pt.c)) atkTargets.push(pt);
+
+      if (atkTargets.length > 0) {
+        // Prefer targets already being focused (most attacks planned on them)
+        // Prioritize kill shots (troops===1) first
+        const killable = atkTargets.filter(t => t.troops === 1);
+        const pool = killable.length > 0 ? killable : atkTargets;
+        // Shuffle for random tie-breaking, then sort stably by focus and troop count
+        for (let i = pool.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
+        pool.sort((a, b) => {
+          const fa = focusTargets[key(a.r, a.c)] || 0;
+          const fb = focusTargets[key(b.r, b.c)] || 0;
+          return fb - fa || a.troops - b.troops;
+        });
+        const t = pool[0];
+        const tk = key(t.r, t.c);
+        focusTargets[tk] = (focusTargets[tk] || 0) + 1;
+        plans[OWNER_P2].push({ kind: 'attack', from: { r, c }, to: { r: t.r, c: t.c } });
+        addLog(`AI plans attack (${r},${c})→(${t.r},${t.c})`, 'log-attack');
+        continue;
+      }
+
+      // If about to spawn, hold position
+      if (aboutToSpawn) continue;
+
+      // Move: strongly prefer capturing/holding hills; otherwise toward P1
+      const moveable = getAIMoveOptions(r, c);
+      if (moveable.length === 0) continue;
+
+      // Prefer moving onto hill tiles first
+      const hillOpts = moveable.filter(m => tiles[m.r][m.c].type === TILE_HILL);
+      if (hillOpts.length > 0) {
+        const best = hillOpts[Math.floor(Math.random() * hillOpts.length)];
+        plans[OWNER_P2].push({ kind: 'move', from: { r, c }, to: best });
+        addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`, 'log-move');
+        continue;
+      }
+
+      // Move toward hills (even if P1 tiles are closer) or toward P1 if no hills
+      const allHills = getHillTiles();
+      const targets = allHills.length > 0 ? allHills : p1TilesAll;
+      let best = moveable[Math.floor(Math.random() * moveable.length)];
+      if (targets.length > 0) {
+        let minDist = Infinity;
+        for (const mt of moveable) {
+          const dist = Math.min(...targets.map(t => manhattan(mt.r, mt.c, t.r, t.c)));
+          if (dist < minDist) { minDist = dist; best = mt; }
+        }
+      }
+      plans[OWNER_P2].push({ kind: 'move', from: { r, c }, to: best });
+      addLog(`AI plans move (${r},${c})→(${best.r},${best.c})`, 'log-move');
+    }
+  }
+}
+
 
 function checkWin() {
   let p1c = 0, p2c = 0;
