@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Sniper Tactics</title>
+    <script type="module" crossorigin src="/assets/index-BBionXkm.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BzI7Kzay.css">
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Sniper Tactics</h1>
+        <div id="hud">
+          <div class="player-info p1">
+            <span class="label">Player 1</span>
+            <span id="p1-tiles">Tiles: 1</span>
+          </div>
+          <div id="turn-display">Turn <span id="turn-num">1</span></div>
+          <div class="player-info p2">
+            <span class="label">Player 2</span>
+            <span id="p2-tiles">Tiles: 1</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Pass-and-play overlay -->
+      <div id="pass-overlay" class="hidden">
+        <div class="pass-card">
+          <h2 id="pass-title">Pass to Player 2</h2>
+          <p id="pass-msg">Player 1 has finished planning. Hand the device to Player 2.</p>
+          <button id="pass-btn">Ready</button>
+        </div>
+      </div>
+
+      <!-- Win overlay -->
+      <div id="win-overlay" class="hidden">
+        <div class="win-card">
+          <h2 id="win-title">Player 1 Wins!</h2>
+          <button id="new-game-win-btn">New Game</button>
+        </div>
+      </div>
+
+      <div id="main-area">
+        <div id="grid-wrapper">
+          <canvas id="game-canvas"></canvas>
+        </div>
+
+        <aside id="sidebar">
+          <div id="action-panel">
+            <div id="phase-label">Player 1's Turn — Select a tile</div>
+            <div id="tile-info" class="hidden">
+              <div id="tile-detail"></div>
+              <div id="action-btns">
+                <button id="btn-move" class="action-btn">Plan Move</button>
+                <button id="btn-attack" class="action-btn">Plan Attack</button>
+                <button id="btn-cancel" class="action-btn secondary">Cancel</button>
+              </div>
+            </div>
+            <div id="done-area">
+              <button id="btn-done" class="done-btn">Done</button>
+            </div>
+          </div>
+
+          <div id="log-container">
+            <h3>Event Log</h3>
+            <ul id="event-log"></ul>
+          </div>
+
+          <button id="new-game-btn">New Game</button>
+        </aside>
+      </div>
+    </div>
+  </body>
+</html>
