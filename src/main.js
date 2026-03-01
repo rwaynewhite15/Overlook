@@ -546,9 +546,9 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     }
   }
 
-  // 4. Flash animation overlays
-  if (flashMoves   && flashMoves.has(k))   { hexPath(cx, cy, s); ctx.fillStyle = 'rgba(80,160,255,0.55)'; ctx.fill(); }
-  if (flashAttacks && flashAttacks.has(k)) { hexPath(cx, cy, s); ctx.fillStyle = 'rgba(255,60,60,0.55)';  ctx.fill(); }
+  // 4. Flash animation overlays (respect fog of war)
+  if (flashMoves   && flashMoves.has(k)   && !hidden) { hexPath(cx, cy, s); ctx.fillStyle = 'rgba(80,160,255,0.55)'; ctx.fill(); }
+  if (flashAttacks && flashAttacks.has(k) && !hidden) { hexPath(cx, cy, s); ctx.fillStyle = 'rgba(255,60,60,0.55)';  ctx.fill(); }
 
   // 5. Range highlights
   if (validMoveTiles.has(k) && tile.type !== TILE_WALL) {
@@ -1431,6 +1431,54 @@ function resolveStorm(summary) {
 // ─── AI Opponent ──────────────────────────────────────────────────────────────
 function makeAIPlans() { makeAIPlansFor(OWNER_P2, aiDifficulty); }
 
+// Shared AI helpers ──────────────────────────────────────────────────────────
+// Storm urgency: 0 = no storm soon, 1+ = increasingly urgent to get inside
+function stormUrgency() {
+  const turnsToStorm = stormStartTurn() - turnNum;
+  if (turnsToStorm > 4) return 0;
+  if (turnsToStorm > 0) return 1;
+  return 2 + Math.floor((turnNum - stormStartTurn()) / Math.max(1, stormShrinkInterval()));
+}
+
+function stormPenalty(tq, tr) {
+  const safeR = getStormRadius();
+  const dist  = hexDist(0, 0, tq, tr);
+  const urgency = stormUrgency();
+  // Already in storm — massive penalty that grows over time
+  if (dist > safeR) return -30 - urgency * 15;
+  // On the edge and storm is near — anticipatory retreat pressure
+  if (dist === safeR && urgency >= 1) return -10 - urgency * 5;
+  // 1 ring from edge with storm incoming
+  if (dist === safeR - 1 && urgency >= 2) return -4 - urgency * 2;
+  // Reward being close to center when storm is active
+  if (urgency >= 1) return Math.max(0, (safeR - dist)) * urgency * 0.5;
+  return 0;
+}
+
+// Flanking: reward positions on the opposite side of an enemy from other friendlies
+function flankBonus(mq, mr, enemyTiles, myOwner) {
+  if (enemyTiles.length === 0) return 0;
+  const myTiles = getOwnerTiles(myOwner);
+  if (myTiles.length <= 1) return 0;
+  let bonus = 0;
+  for (const enemy of enemyTiles) {
+    // Direction from enemy to candidate move
+    const dq1 = mq - enemy.q, dr1 = mr - enemy.r;
+    // Check if at least one friendly is on the opposite side
+    for (const ally of myTiles) {
+      if (ally.q === mq && ally.r === mr) continue;
+      const dq2 = ally.q - enemy.q, dr2 = ally.r - enemy.r;
+      // Dot product < 0 means they're on opposite sides of the enemy
+      const dot = dq1 * dq2 + dr1 * dr2;
+      if (dot < 0 && hexDist(mq, mr, enemy.q, enemy.r) <= 3) {
+        bonus += 4;
+        break; // one flank per enemy is enough
+      }
+    }
+  }
+  return bonus;
+}
+
 function makeAIPlansFor(myOwner, difficulty) {
   if      (difficulty === 'easy')   makeAIPlansEasyFor(myOwner);
   else if (difficulty === 'medium') makeAIPlansMediumFor(myOwner);
@@ -1502,27 +1550,39 @@ function makeAIPlansEasyFor(myOwner) {
 
     // Move: charge nearest visible enemy; if none visible, seek hills for vision
     const moveable = getAIMoveOptionsFor(q, r, myOwner);
-    if (moveable.length === 0) continue;
     const enemyTiles = getOwnerTiles(enemyOwner).filter(e => aiCanSee(e.q, e.r, myOwner));
     const safeR = getStormRadius();
     const inStorm = hexDist(0, 0, q, r) > safeR;
-    let best = moveable[0], bestScore = -Infinity;
+    const curTile = tiles.get(hexKey(q, r));
+
+    // Score staying put
+    let stayScore = 0;
+    const spawnProgress = curTile.ownedTurns || 0;
+    stayScore += spawnProgress * 3;
+    if (spawnProgress === SPAWN_TURNS - 1) stayScore += 6;
+    if (curTile.troops < MAX_TROOPS) stayScore += 2;
+    if (isHillType(curTile.type)) stayScore += 3 + hillVisibility(curTile.type) * 2;
+    if (enemyTiles.length === 0) stayScore += 3;
+    stayScore += stormPenalty(q, r);
+
+    let best = null, bestScore = stayScore;
     for (const mt of moveable) {
-      const mtStorm = hexDist(0, 0, mt.q, mt.r) > safeR;
       let score = 0;
       if (enemyTiles.length > 0) {
         score = -Math.min(...enemyTiles.map(pt => hexDist(mt.q, mt.r, pt.q, pt.r))) * 2;
+        score += flankBonus(mt.q, mt.r, enemyTiles, myOwner);
       } else {
-        // No visible enemies: prefer hills (for vision) and move toward center
         score = -hexDist(0, 0, mt.q, mt.r);
         const destType = tiles.get(hexKey(mt.q, mt.r)).type;
         if (isHillType(destType)) score += 5 + hillVisibility(destType) * 3;
       }
-      if (mtStorm) score -= 20;
+      score += stormPenalty(mt.q, mt.r);
       if (score > bestScore) { bestScore = score; best = mt; }
     }
-    plans[myOwner].push({ kind: 'move', from: { q, r }, to: best });
-    addLog(`AI P${myOwner} moves (${q},${r})\u2192(${best.q},${best.r})`, 'log-move');
+    if (best) {
+      plans[myOwner].push({ kind: 'move', from: { q, r }, to: best });
+      addLog(`AI P${myOwner} moves (${q},${r})\u2192(${best.q},${best.r})`, 'log-move');
+    }
   }
 }
 
@@ -1574,12 +1634,31 @@ function makeAIPlansMediumFor(myOwner) {
       continue;
     }
 
-    // Move: scored by hill value, attack coverage, enemy adjacency, distance
+    // Move: scored by hill value, attack coverage, enemy adjacency, flanking, storm
     const moveable = getAIMoveOptionsFor(q, r, myOwner);
-    if (moveable.length === 0) continue;
     const enemyTiles = getOwnerTiles(enemyOwner).filter(e => aiCanSee(e.q, e.r, myOwner));
+    const safeR = getStormRadius();
+    const curTile = tiles.get(hexKey(q, r));
+    const curRange = getTileRange(curTile);
 
-    let best = moveable[0], bestScore = -Infinity;
+    // Score staying put — reward spawn buildup and strong positions
+    let stayScore = 0;
+    const spawnProgress = curTile.ownedTurns || 0;
+    stayScore += spawnProgress * 3;
+    if (spawnProgress === SPAWN_TURNS - 1) stayScore += 8;
+    if (curTile.troops < MAX_TROOPS) stayScore += 2;
+    if (isHillType(curTile.type)) stayScore += 4 + hillRange(curTile.type) + hillVisibility(curTile.type) * 2;
+    if (enemyTiles.length > 0) {
+      const curCoverage = enemyTiles.filter(pt => hexDist(q, r, pt.q, pt.r) <= curRange).length;
+      stayScore += curCoverage * 3;
+      if (enemyTiles.some(pt => hexDist(q, r, pt.q, pt.r) === 1)) stayScore += 5;
+      stayScore += flankBonus(q, r, enemyTiles, myOwner);
+    } else {
+      stayScore += 3;
+    }
+    stayScore += stormPenalty(q, r);
+
+    let best = null, bestScore = stayScore;
     for (const mt of moveable) {
       const destType = tiles.get(hexKey(mt.q, mt.r)).type;
       let score = 0;
@@ -1587,30 +1666,24 @@ function makeAIPlansMediumFor(myOwner) {
       if (enemyTiles.length > 0) {
         const distToEnemy = Math.min(...enemyTiles.map(pt => hexDist(mt.q, mt.r, pt.q, pt.r)));
         score = -distToEnemy * 2;
-
-        // Bonus for being adjacent to an enemy (can attack next turn)
         if (enemyTiles.some(pt => hexDist(mt.q, mt.r, pt.q, pt.r) === 1)) score += 5;
-
-        // Bonus for how many enemies we could fire on from this spot
         const range = getTileRange(tiles.get(hexKey(mt.q, mt.r)));
         const coverage = enemyTiles.filter(pt => hexDist(mt.q, mt.r, pt.q, pt.r) <= range).length;
         score += coverage * 3;
+        score += flankBonus(mt.q, mt.r, enemyTiles, myOwner);
       } else {
-        // No visible enemies: seek hills for vision, move toward center
         score = -hexDist(0, 0, mt.q, mt.r);
       }
 
       if (isHillType(destType)) score += 4 + hillRange(destType) + hillVisibility(destType) * 2;
-
-      // Storm avoidance
-      const safeR = getStormRadius();
-      if (hexDist(0, 0, mt.q, mt.r) > safeR) score -= 15;
-      else if (hexDist(0, 0, mt.q, mt.r) === safeR && turnNum >= stormStartTurn() - 2) score -= 5;
+      score += stormPenalty(mt.q, mt.r);
 
       if (score > bestScore) { bestScore = score; best = mt; }
     }
-    plans[myOwner].push({ kind: 'move', from: { q, r }, to: best });
-    addLog(`AI P${myOwner} moves (${q},${r})\u2192(${best.q},${best.r})`, 'log-move');
+    if (best) {
+      plans[myOwner].push({ kind: 'move', from: { q, r }, to: best });
+      addLog(`AI P${myOwner} moves (${q},${r})\u2192(${best.q},${best.r})`, 'log-move');
+    }
   }
 }
 
@@ -1726,52 +1799,64 @@ function makeAIPlansHardFor(myOwner) {
       continue;
     }
 
-    // B: Move — score each option
+    // B: Move — score each option (including staying put)
     const moveable = getAIMoveOptionsFor(q, r, myOwner);
-    if (moveable.length === 0) continue;
+    const safeR = getStormRadius();
+    const curTile = tiles.get(hexKey(q, r));
+    const curRange = getTileRange(curTile);
 
-    let best = moveable[0], bestScore = -Infinity;
+    // Score staying put — reward spawn buildup and strong positioning
+    let stayScore = 0;
+    const spawnProg = curTile.ownedTurns || 0;
+    stayScore += spawnProg * 4;
+    if (spawnProg === SPAWN_TURNS - 1) stayScore += 10;
+    if (curTile.troops < MAX_TROOPS) stayScore += 3;
+    if (isHillType(curTile.type)) stayScore += 4 + hillRange(curTile.type) + hillVisibility(curTile.type) * 2;
+    if (enemyTilesAll.length > 0) {
+      const curCoverage = enemyTilesAll.filter(e => hexDist(q, r, e.q, e.r) <= curRange).length;
+      stayScore += curCoverage * 4;
+      if (enemyTilesAll.some(e => hexDist(q, r, e.q, e.r) === 1)) stayScore += 6;
+      stayScore += flankBonus(q, r, enemyTilesAll, myOwner);
+    } else {
+      stayScore += 4;
+    }
+    stayScore += stormPenalty(q, r);
+    if (blitz) stayScore -= 5;
+
+    let best = null, bestScore = stayScore;
     for (const mt of moveable) {
       const destType = tiles.get(hexKey(mt.q, mt.r)).type;
       const destRange = getTileRange(tiles.get(hexKey(mt.q, mt.r)));
       let score = 0;
 
-      // Hill control: valuable fire + vision platform
       if (isHillType(destType)) score += 4 + hillRange(destType) + hillVisibility(destType) * 2;
 
       if (enemyTilesAll.length > 0) {
-        // How many enemy tiles we can fire on from this position next turn
         const coverage = enemyTilesAll.filter(e => hexDist(mt.q, mt.r, e.q, e.r) <= destRange).length;
         score += coverage * 4;
-
-        // Adjacent to enemy = immediate threat / can attack next turn regardless of range
         const adjEnemy = enemyTilesAll.some(e => hexDist(mt.q, mt.r, e.q, e.r) === 1);
         if (adjEnemy) score += 6;
-
-        // Progress toward enemy cluster center
         const curDist  = Math.sqrt((q - ecx) ** 2 + (r - ecy) ** 2);
         const newDist  = Math.sqrt((mt.q - ecx) ** 2 + (mt.r - ecy) ** 2);
         score += (curDist - newDist) * 3;
+        score += flankBonus(mt.q, mt.r, enemyTilesAll, myOwner);
       } else {
-        // No visible enemies: seek hills and center for vision
         score += -hexDist(0, 0, mt.q, mt.r);
       }
 
-      // In blitz mode, heavily reward closing the nearest gap
       if (blitz) {
         const nearestGap = Math.min(...enemyTilesAll.map(e => hexDist(mt.q, mt.r, e.q, e.r)));
         score += (HEX_RADIUS * 2 - nearestGap) * 3;
       }
 
-      // Storm avoidance
-      const safeR = getStormRadius();
-      if (hexDist(0, 0, mt.q, mt.r) > safeR) score -= 20;
-      else if (hexDist(0, 0, mt.q, mt.r) === safeR && turnNum >= stormStartTurn() - 2) score -= 6;
+      score += stormPenalty(mt.q, mt.r);
 
       if (score > bestScore) { bestScore = score; best = mt; }
     }
-    plans[myOwner].push({ kind: 'move', from: { q, r }, to: best });
-    addLog(`AI P${myOwner} moves (${q},${r})\u2192(${best.q},${best.r})`, 'log-move');
+    if (best) {
+      plans[myOwner].push({ kind: 'move', from: { q, r }, to: best });
+      addLog(`AI P${myOwner} moves (${q},${r})\u2192(${best.q},${best.r})`, 'log-move');
+    }
   }
 }
 
