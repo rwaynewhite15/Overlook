@@ -7,7 +7,7 @@ Two players take turns planning moves and attacks on a 5×5 grid. Each turn, bot
 
 ### Tile Types
 - **Empty** – standard ground, can be captured and held.
-- **Hill** – extended attack range (6 tiles) and fortification bonus (50% miss chance when 3+ troops are present).
+- **Hill** – extended attack range (4 tiles) and fortification bonus (50% miss chance when 3+ troops are present).
 - **Wall** – impassable; blocks line-of-sight for non-hill attackers.
 
 ### Winning
@@ -27,8 +27,8 @@ A troop can move to any adjacent (non-wall) tile that is either unoccupied or al
 
 ### Attacking
 Each troop can plan one attack per turn. Range depends on terrain:
-- **Empty/Wall-adjacent tiles**: 3 tiles (Manhattan distance), blocked by adjacent walls.
-- **Hill tiles**: 6 tiles, unobstructed (overwatch).
+- **Empty/Wall-adjacent tiles**: 2 tiles (Manhattan distance), blocked by adjacent walls.
+- **Hill tiles**: 4 tiles, unobstructed (overwatch).
 
 If two opposing players both attack each other in the same turn (mutual strike) the attacker also loses 1 troop.
 
