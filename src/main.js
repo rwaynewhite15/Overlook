@@ -7,15 +7,20 @@ const TILE_HILL_MED  = 3; // range 6  (medium)
 const TILE_HILL_TALL = 4; // range 8  (tall)
 
 const OWNER_NONE = 0;
-const OWNER_P1   = 1;
-const OWNER_P2   = 2;
+const NUM_PLAYERS = 6;
+const PLAYERS = [1, 2, 3, 4, 5, 6];
 
-const PHASE_P1   = 'p1';
-const PHASE_P2   = 'p2';
+// Player color theme: tint, stroke, badge, CSS label, short name
+const PLAYER_COLORS = {
+  1: { tint:'rgba(60,110,230,0.22)',  stroke:'rgba(80,150,255,0.55)',  badge:'#1840a0', css:'#3b82f6', name:'Blue' },
+  2: { tint:'rgba(220,50,50,0.22)',   stroke:'rgba(255,80,80,0.55)',   badge:'#961818', css:'#ef4444', name:'Red' },
+  3: { tint:'rgba(40,180,80,0.22)',   stroke:'rgba(60,220,100,0.55)',  badge:'#167034', css:'#22c55e', name:'Green' },
+  4: { tint:'rgba(220,200,40,0.22)',  stroke:'rgba(250,230,60,0.55)',  badge:'#8a7a10', css:'#eab308', name:'Yellow' },
+  5: { tint:'rgba(160,60,220,0.22)',  stroke:'rgba(190,100,250,0.55)', badge:'#6a2890', css:'#a855f7', name:'Purple' },
+  6: { tint:'rgba(240,140,40,0.22)',  stroke:'rgba(255,170,60,0.55)',  badge:'#a06010', css:'#f97316', name:'Orange' },
+};
 
 const BASE_RANGE = 2;
-
-// Hill helpers (defined after tile constants so they can be const arrows)
 const isHillType     = t => t === TILE_HILL || t === TILE_HILL_MED || t === TILE_HILL_TALL;
 const hillRange      = t => t === TILE_HILL_TALL ? 8 : t === TILE_HILL_MED ? 6 : 4;
 const hillVisibility = t => t === TILE_HILL_TALL ? 3 : t === TILE_HILL_MED ? 2 : 1;
@@ -23,48 +28,62 @@ const getTileRange   = tile => isHillType(tile.type) ? hillRange(tile.type) : BA
 const MAX_TROOPS              = 10;
 const FORTIFICATION_MISS_CHANCE = 0.5;
 const SPAWN_TURNS             = 3;
-
-// Storm: shrinking safe zone forces engagement (dynamic, see stormStartTurn / stormShrinkInterval)
-const STORM_DAMAGE          = 2;  // damage per turn to troops in storm
-
+const STORM_DAMAGE            = 2;
 const ZOOM_MIN  = 0.3;
 const ZOOM_MAX  = 6;
 const ZOOM_STEP = 0.15;
-
-// Flat-top hex cube directions [dq, dr]
-// Keys:  T=NW  Y=NE  H=E  B=SE  V=SW  F=W
 const HEX_DIRS = [[0,-1],[1,-1],[1,0],[0,1],[-1,1],[-1,0]];
 
 // ─── State ────────────────────────────────────────────────────────────────────
-let tiles         = new Map(); // hexKey(q,r) → {type, owner, troops, ownedTurns}
-let plans         = { [OWNER_P1]: [], [OWNER_P2]: [] };
-let phase         = PHASE_P1;
+let tiles         = new Map();
+let plans         = {};
+let phase         = 'p1';
 let turnNum       = 1;
-let selected      = null;      // {q, r}
+let selected      = null;
 let pendingAction = null;
 let eventLog      = [];
 let validMoveTiles = new Set();
 let validAtkTiles  = new Set();
-let tooltipTile   = null;      // {q, r}
+let tooltipTile   = null;
 let zoomLevel     = 1;
-let aiDifficulty   = 'off';
-let aiDifficultyP1 = 'off';
+
+// Per-player AI difficulty: 'human' | 'easy' | 'medium' | 'hard' | 'off'
+let aiDifficulties = { 1:'human', 2:'human', 3:'off', 4:'off', 5:'off', 6:'off' };
 let aiVsAiPaused   = false;
 let aiVsAiTimerId  = null;
 const AI_VS_AI_DELAY = 900;
-let cursor        = null;      // {q, r}
-let preResolveTroops = { p1: 0, p2: 0 }; // snapshot for tiebreaker
-let panX = 0, panY = 0;  // pan offset in pixels (for scrolling large maps)
 
-// Fog of War: tracks which enemy tiles each player can see
-// revealedTiles[OWNER_P1] = set of hexKeys that P1 can see (enemy tiles revealed to P1)
-let revealedTiles = { [OWNER_P1]: new Set(), [OWNER_P2]: new Set() };
+let cursor        = null;
+let preResolveTroops = {};
+let panX = 0, panY = 0;
+let revealedTiles = {};
+let turnOrder     = [];
+let planIndex     = 0;
+let gameJustStarted = true;
 
-// Canvas
 let canvas, ctx, hexSize;
-
-// Audio
 let audioCtx = null;
+
+// ─── Player helpers ───────────────────────────────────────────────────────────
+function phaseOwner()           { return parseInt(phase.slice(1)); }
+function ownerPhase(o)          { return 'p' + o; }
+function isPlayerActive(p)      { return aiDifficulties[p] !== 'off'; }
+function isPlayerAI(p)          { return isPlayerActive(p) && aiDifficulties[p] !== 'human'; }
+function isPlayerHuman(p)       { return aiDifficulties[p] === 'human'; }
+function isPlayerAlive(p) {
+  if (!isPlayerActive(p)) return false;
+  for (const tile of tiles.values())
+    if (tile.owner === p && tile.troops > 0) return true;
+  return false;
+}
+function getActivePlayers()     { return PLAYERS.filter(isPlayerActive); }
+function getAlivePlayers()      { return PLAYERS.filter(isPlayerAlive); }
+function isSpectateMode() {
+  const alive = getAlivePlayers();
+  return alive.length === 0 || alive.every(p => isPlayerAI(p));
+}
+function resetPlans()           { plans = {}; PLAYERS.forEach(p => plans[p] = []); }
+function resetRevealedTiles()   { revealedTiles = {}; PLAYERS.forEach(p => revealedTiles[p] = new Set()); }
 
 // ─── Audio ────────────────────────────────────────────────────────────────────
 function getAudioCtx() {
@@ -119,16 +138,13 @@ function hexDist(q1, r1, q2, r2) {
   return Math.max(Math.abs(q1 - q2), Math.abs(r1 - r2), Math.abs((q1 + r1) - (q2 + r2)));
 }
 
-// Neighbours that exist in the current map
 function hexNeighbors(q, r) {
   return HEX_DIRS.map(([dq, dr]) => [q + dq, r + dr]).filter(([nq, nr]) => tiles.has(hexKey(nq, nr)));
 }
-// All 6 geometric neighbours (may be outside map)
 function hexNeighborsAll(q, r) {
   return HEX_DIRS.map(([dq, dr]) => [q + dq, r + dr]);
 }
 
-// Flat-top pixel centre for axial (q, r)
 function hexToPixel(q, r) {
   return {
     x: hexSize * (3 / 2) * q,
@@ -136,7 +152,6 @@ function hexToPixel(q, r) {
   };
 }
 
-// Pixel (relative to canvas centre) → nearest hex axial coords
 function pixelToHex(px, py) {
   const q = (2 / 3 * px) / hexSize;
   const r = (-1 / 3 * px + Math.sqrt(3) / 3 * py) / hexSize;
@@ -152,11 +167,10 @@ function hexRound(fq, fr) {
   return { q, r };
 }
 
-// Draw a flat-top hex outline path (no fill/stroke called here)
 function hexPath(cx, cy, s) {
   ctx.beginPath();
   for (let i = 0; i < 6; i++) {
-    const angle = Math.PI / 3 * i; // 0°, 60°, … (flat-top vertices)
+    const angle = Math.PI / 3 * i;
     const x = cx + s * Math.cos(angle);
     const y = cy + s * Math.sin(angle);
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
@@ -169,23 +183,8 @@ function init() {
   canvas = document.getElementById('game-canvas');
   ctx    = canvas.getContext('2d');
 
-  generateMap();
-  phase          = PHASE_P1;
-  turnNum        = 1;
-  plans          = { [OWNER_P1]: [], [OWNER_P2]: [] };
-  selected       = null;
-  pendingAction  = null;
-  eventLog       = [];
-  validMoveTiles = new Set();
-  validAtkTiles  = new Set();
-  tooltipTile    = null;
-  cursor         = null;
-
-  resizeCanvas();
-  render();
-  updateHUD();
-  updatePhaseLabel();
-  clearLog();
+  buildPlayerHUD();
+  buildAIControls();
 
   window.addEventListener('resize', () => { resizeCanvas(); render(); });
   canvas.addEventListener('pointerdown', onCanvasClick);
@@ -203,23 +202,11 @@ function init() {
   document.getElementById('pass-btn').addEventListener('click',   onPassReady);
   document.getElementById('new-game-btn').addEventListener('click',     newGame);
   document.getElementById('new-game-win-btn').addEventListener('click', newGame);
-  document.getElementById('ai-difficulty').addEventListener('change', e => {
-    aiDifficulty = e.target.value;
-    clearTimeout(aiVsAiTimerId);
-    updatePhaseLabel();
-  });
-  document.getElementById('ai-difficulty-p1').addEventListener('change', e => {
-    aiDifficultyP1 = e.target.value;
-    clearTimeout(aiVsAiTimerId);
-    updatePhaseLabel();
-  });
   document.getElementById('ai-vs-ai-pause').addEventListener('click', toggleAiVsAiPause);
 
   const mapSlider = document.getElementById('map-size-slider');
   const mapLabel  = document.getElementById('map-size-value');
-  mapSlider.addEventListener('input', () => {
-    mapLabel.textContent = mapSlider.value;
-  });
+  mapSlider.addEventListener('input', () => { mapLabel.textContent = mapSlider.value; });
   mapSlider.addEventListener('change', () => {
     const edgeLen = parseInt(mapSlider.value, 10);
     HEX_RADIUS = edgeLen - 1;
@@ -227,15 +214,72 @@ function init() {
   });
 
   document.addEventListener('keydown', onKeyDown);
+
+  newGame();
 }
 
+function buildPlayerHUD() {
+  const container = document.getElementById('player-hud');
+  container.innerHTML = '';
+  for (const p of PLAYERS) {
+    const div = document.createElement('div');
+    div.className = 'phud-item';
+    div.id = `phud-${p}`;
+    div.innerHTML =
+      `<span class="phud-dot" style="background:${PLAYER_COLORS[p].css}"></span>` +
+      `<span class="phud-name" style="color:${PLAYER_COLORS[p].css}">P${p}</span>` +
+      `<span class="phud-tiles" id="phud-tiles-${p}">0</span>`;
+    container.appendChild(div);
+  }
+}
+
+function buildAIControls() {
+  const container = document.getElementById('ai-difficulty-control');
+  container.innerHTML = '';
+  for (const p of PLAYERS) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ai-ctrl-row';
+    const label = document.createElement('label');
+    label.setAttribute('for', `ai-select-${p}`);
+    label.className = 'ai-ctrl-label';
+    label.style.color = PLAYER_COLORS[p].css;
+    label.textContent = `P${p}`;
+    const select = document.createElement('select');
+    select.id = `ai-select-${p}`;
+    select.className = 'ai-ctrl-select';
+    const options = [
+      { value: 'human',  text: 'Human' },
+      { value: 'easy',   text: 'AI Easy' },
+      { value: 'medium', text: 'AI Medium' },
+      { value: 'hard',   text: 'AI Hard' },
+      { value: 'off',    text: 'Off' },
+    ];
+    for (const opt of options) {
+      const o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.text;
+      if (opt.value === aiDifficulties[p]) o.selected = true;
+      select.appendChild(o);
+    }
+    select.addEventListener('change', (e) => {
+      aiDifficulties[p] = e.target.value;
+      clearTimeout(aiVsAiTimerId);
+      updatePhaseLabel();
+      updateHUD();
+    });
+    wrapper.appendChild(label);
+    wrapper.appendChild(select);
+    container.appendChild(wrapper);
+  }
+}
+
+// ─── New Game ─────────────────────────────────────────────────────────────────
 function newGame() {
   document.getElementById('win-overlay').classList.add('hidden');
   document.getElementById('pass-overlay').classList.add('hidden');
   generateMap();
-  phase          = PHASE_P1;
   turnNum        = 1;
-  plans          = { [OWNER_P1]: [], [OWNER_P2]: [] };
+  resetPlans();
   selected       = null;
   pendingAction  = null;
   eventLog       = [];
@@ -247,17 +291,51 @@ function newGame() {
   panY           = 0;
   cursor         = null;
   aiVsAiPaused   = false;
-  revealedTiles  = { [OWNER_P1]: new Set(), [OWNER_P2]: new Set() };
+  gameJustStarted = true;
+  resetRevealedTiles();
   clearTimeout(aiVsAiTimerId);
+
+  // Set up planning order
+  turnOrder = getAlivePlayers();
+  planIndex = 0;
+
+  if (isSpectateMode()) {
+    phase = ownerPhase(turnOrder[0] || 1);
+  } else {
+    // Skip leading AIs (auto-plan them)
+    while (planIndex < turnOrder.length && isPlayerAI(turnOrder[planIndex])) {
+      makeAIPlansFor(turnOrder[planIndex], aiDifficulties[turnOrder[planIndex]]);
+      planIndex++;
+    }
+    if (planIndex < turnOrder.length) {
+      phase = ownerPhase(turnOrder[planIndex]);
+    } else {
+      phase = 'p1';
+    }
+  }
+
   resizeCanvas();
   render();
   updateHUD();
-  updatePhaseLabel(); // calls scheduleAiTurnIfNeeded if needed
+  updatePhaseLabel();
   clearLog();
   hideTileInfo();
 }
 
 // ─── Map Generation ───────────────────────────────────────────────────────────
+function getSpawnPosition(playerNum) {
+  const R = HEX_RADIUS;
+  const positions = {
+    1: { q: -R, r: 0 },          // west
+    2: { q: R,  r: 0 },          // east
+    3: { q: 0,  r: -R },         // north-west
+    4: { q: 0,  r: R },          // south-east
+    5: { q: R,  r: -R },         // north-east
+    6: { q: -R, r: R },          // south-west
+  };
+  return positions[playerNum];
+}
+
 function generateMap() {
   tiles = new Map();
   for (const [q, r] of allHexes()) {
@@ -270,23 +348,27 @@ function generateMap() {
     tiles.set(hexKey(q, r), { type, owner: OWNER_NONE, troops: 0, ownedTurns: 0 });
   }
 
-  // Clear spawn corners and their immediate neighbours
   const clearAround = (q, r) => {
     const t = tiles.get(hexKey(q, r));
     if (t) t.type = TILE_EMPTY;
-    for (const [nq, nr] of hexNeighbors(q, r)) {
-      const nt = tiles.get(hexKey(nq, nr));
-      if (nt) nt.type = TILE_EMPTY;
+    if (HEX_RADIUS >= 2) {
+      for (const [nq, nr] of hexNeighbors(q, r)) {
+        const nt = tiles.get(hexKey(nq, nr));
+        if (nt) nt.type = TILE_EMPTY;
+      }
     }
   };
-  clearAround(-HEX_RADIUS, 0);
-  clearAround( HEX_RADIUS, 0);
 
-  // Starting troops: P1 on left, P2 on right
-  const p1 = tiles.get(hexKey(-HEX_RADIUS, 0));
-  const p2 = tiles.get(hexKey( HEX_RADIUS, 0));
-  p1.owner = OWNER_P1; p1.troops = 1;
-  p2.owner = OWNER_P2; p2.troops = 1;
+  for (const p of PLAYERS) {
+    if (!isPlayerActive(p)) continue;
+    const sp = getSpawnPosition(p);
+    clearAround(sp.q, sp.r);
+    const tile = tiles.get(hexKey(sp.q, sp.r));
+    if (tile) {
+      tile.owner = p;
+      tile.troops = 1;
+    }
+  }
 }
 
 // ─── Canvas resize ────────────────────────────────────────────────────────────
@@ -295,15 +377,12 @@ function resizeCanvas() {
   const maxW = wrapper.clientWidth;
   const maxH = wrapper.clientHeight;
   const fitSize = Math.min(maxW, maxH);
-  // Bounding box in "size=1" units: width ≈ 3R+2.5, height ≈ sqrt(3)*(2R+1)
   const wUnits = 3 * HEX_RADIUS + 2.5;
   const hUnits = Math.sqrt(3) * (2 * HEX_RADIUS + 1);
   const base   = Math.floor(fitSize / Math.max(wUnits, hUnits));
   hexSize = Math.max(4, Math.floor(base * zoomLevel));
-  // Canvas can be larger than the viewport for panning
   canvas.width  = Math.ceil(hexSize * wUnits * 1.06);
   canvas.height = Math.ceil(hexSize * hUnits * 1.06);
-  // Clamp pan so map stays reachable
   clampPan();
 }
 
@@ -322,8 +401,8 @@ function render(flashMoves, flashAttacks) {
   const originX = canvas.width  / 2 + panX;
   const originY = canvas.height / 2 + panY;
 
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
-  const currentPlans = plans[currentOwner];
+  const currentOwner = phaseOwner();
+  const currentPlans = plans[currentOwner] || [];
 
   const moveFromSet = new Set(), moveToSet  = new Set();
   const atkFromSet  = new Set(), atkToSet   = new Set();
@@ -341,7 +420,6 @@ function render(flashMoves, flashAttacks) {
             moveFromSet, moveToSet, atkFromSet, atkToSet, flashMoves, flashAttacks);
   }
 
-  // Hex borders on top
   ctx.strokeStyle = 'rgba(0,0,0,0.18)';
   ctx.lineWidth   = 0.8;
   for (const [q, r] of allHexes()) {
@@ -387,7 +465,6 @@ function drawHexWall(cx, cy, s) {
   hexPath(cx, cy, s);
   ctx.fillStyle = g;
   ctx.fill();
-  // Top sheen
   ctx.save();
   hexPath(cx, cy, s);
   ctx.clip();
@@ -401,30 +478,25 @@ function drawHexWall(cx, cy, s) {
 
 function drawHexHillLevel(cx, cy, s, tileType) {
   if (tileType === TILE_HILL_TALL) {
-    // ── Tall mountain: rocky grey with snow cap ──
     const bg = ctx.createRadialGradient(cx, cy, s * 0.05, cx, cy, s);
     bg.addColorStop(0,   '#a0a89a');
     bg.addColorStop(0.5, '#5a6450');
     bg.addColorStop(1,   '#2a3028');
     hexPath(cx, cy, s); ctx.fillStyle = bg; ctx.fill();
-    // Snow cap
     const sg = ctx.createRadialGradient(cx - s * 0.08, cy - s * 0.18, 0, cx, cy, s * 0.42);
     sg.addColorStop(0,   'rgba(255,255,255,0.95)');
     sg.addColorStop(0.45,'rgba(220,232,245,0.55)');
     sg.addColorStop(1,   'rgba(180,195,210,0)');
     hexPath(cx, cy, s); ctx.fillStyle = sg; ctx.fill();
-    // Three triangles
     ctx.fillStyle    = 'rgba(50,45,40,0.88)';
     ctx.font         = `bold ${Math.max(5, Math.floor(s * 0.28))}px serif`;
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('\u25b2\u25b2\u25b2', cx, cy + s * 0.08);
-    // Range badge
     ctx.fillStyle    = 'rgba(255,255,255,0.72)';
     ctx.font         = `bold ${Math.max(5, Math.floor(s * 0.22))}px sans-serif`;
     ctx.fillText('8', cx, cy - s * 0.32);
   } else if (tileType === TILE_HILL_MED) {
-    // ── Medium hill: deep green with rocky top hint ──
     const bg = ctx.createRadialGradient(cx, cy, s * 0.1, cx, cy, s);
     bg.addColorStop(0,   '#2d6025');
     bg.addColorStop(0.6, '#1a3d12');
@@ -435,23 +507,19 @@ function drawHexHillLevel(cx, cy, s, tileType) {
     mg.addColorStop(0.5, 'rgba(75,135,50,0.45)');
     mg.addColorStop(1,   'rgba(20,55,10,0)');
     hexPath(cx, cy, s); ctx.fillStyle = mg; ctx.fill();
-    // Rocky grey hint at peak
     const rg = ctx.createRadialGradient(cx, cy - s * 0.18, 0, cx, cy, s * 0.36);
     rg.addColorStop(0,   'rgba(155,145,115,0.42)');
     rg.addColorStop(1,   'rgba(155,145,115,0)');
     hexPath(cx, cy, s); ctx.fillStyle = rg; ctx.fill();
-    // Two triangles
     ctx.fillStyle    = 'rgba(38,68,22,0.92)';
     ctx.font         = `bold ${Math.max(5, Math.floor(s * 0.36))}px serif`;
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('\u25b2\u25b2', cx, cy + s * 0.06);
-    // Range badge
     ctx.fillStyle    = 'rgba(200,245,145,0.78)';
     ctx.font         = `bold ${Math.max(5, Math.floor(s * 0.22))}px sans-serif`;
     ctx.fillText('6', cx, cy - s * 0.3);
   } else {
-    // ── Standard low hill (range 4) ──
     const bg = ctx.createRadialGradient(cx, cy, s * 0.1, cx, cy, s);
     bg.addColorStop(0, '#3d7a30');
     bg.addColorStop(1, '#1e4016');
@@ -466,7 +534,6 @@ function drawHexHillLevel(cx, cy, s, tileType) {
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('\u25b2', cx, cy + s * 0.02);
-    // Range badge
     ctx.fillStyle    = 'rgba(200,245,145,0.75)';
     ctx.font         = `bold ${Math.max(5, Math.floor(s * 0.22))}px sans-serif`;
     ctx.fillText('4', cx, cy - s * 0.3);
@@ -475,34 +542,33 @@ function drawHexHillLevel(cx, cy, s, tileType) {
 
 // ─── Fog of War helpers ───────────────────────────────────────────────────────
 function isTileHiddenForViewer(q, r, viewer) {
-  if (isAiVsAi()) return false; // spectators see everything
+  if (isSpectateMode()) return false;
+  if (!isPlayerAlive(viewer)) return false;
   const tile = tiles.get(hexKey(q, r));
   if (!tile) return false;
   if (tile.owner === OWNER_NONE || tile.owner === viewer) return false;
-  // Revealed by attacking
-  if (revealedTiles[viewer].has(hexKey(q, r))) return false;
-  // Hill vision: viewer's troops on hills can spot nearby enemies
+  if (revealedTiles[viewer] && revealedTiles[viewer].has(hexKey(q, r))) return false;
   for (const [hq, hr] of allHexes()) {
     const ht = tiles.get(hexKey(hq, hr));
     if (!ht || ht.owner !== viewer || ht.troops <= 0) continue;
     if (!isHillType(ht.type)) continue;
-    const vis = hillVisibility(ht.type);
-    if (hexDist(hq, hr, q, r) <= vis) return false;
+    if (hexDist(hq, hr, q, r) <= hillVisibility(ht.type)) return false;
   }
   return true;
 }
 
 function isOwnTileSpotted(q, r, owner) {
-  if (isAiVsAi()) return false;
-  const enemy = owner === OWNER_P1 ? OWNER_P2 : OWNER_P1;
-  // Spotted if you attacked (revealed to enemy)
-  if (revealedTiles[enemy].has(hexKey(q, r))) return true;
-  // Spotted if enemy has a hill with vision on you
-  for (const [hq, hr] of allHexes()) {
-    const ht = tiles.get(hexKey(hq, hr));
-    if (!ht || ht.owner !== enemy || ht.troops <= 0) continue;
-    if (!isHillType(ht.type)) continue;
-    if (hexDist(hq, hr, q, r) <= hillVisibility(ht.type)) return true;
+  if (isSpectateMode()) return false;
+  if (!isPlayerAlive(owner)) return false;
+  for (const enemy of PLAYERS) {
+    if (enemy === owner || !isPlayerActive(enemy)) continue;
+    if (revealedTiles[enemy] && revealedTiles[enemy].has(hexKey(q, r))) return true;
+    for (const [hq, hr] of allHexes()) {
+      const ht = tiles.get(hexKey(hq, hr));
+      if (!ht || ht.owner !== enemy || ht.troops <= 0) continue;
+      if (!isHillType(ht.type)) continue;
+      if (hexDist(hq, hr, q, r) <= hillVisibility(ht.type)) return true;
+    }
   }
   return false;
 }
@@ -514,8 +580,7 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
   const s = hexSize;
   const k = hexKey(q, r);
 
-  // Fog of War: determine visibility
-  const currentViewer = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentViewer = phaseOwner();
   const hidden = isTileHiddenForViewer(q, r, currentViewer);
 
   // 1. Base terrain
@@ -535,18 +600,16 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     }
   }
 
-  // 3. Ownership tint + border (hidden in fog of war)
-  if (tile.type !== TILE_WALL && !hidden) {
-    if (tile.owner === OWNER_P1) {
-      hexPath(cx, cy, s); ctx.fillStyle   = 'rgba(60,110,230,0.22)'; ctx.fill();
-      hexPath(cx, cy, s); ctx.strokeStyle = 'rgba(80,150,255,0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
-    } else if (tile.owner === OWNER_P2) {
-      hexPath(cx, cy, s); ctx.fillStyle   = 'rgba(220,50,50,0.22)'; ctx.fill();
-      hexPath(cx, cy, s); ctx.strokeStyle = 'rgba(255,80,80,0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
+  // 3. Ownership tint + border (6 player colors, hidden in fog)
+  if (tile.type !== TILE_WALL && !hidden && tile.owner !== OWNER_NONE) {
+    const pc = PLAYER_COLORS[tile.owner];
+    if (pc) {
+      hexPath(cx, cy, s); ctx.fillStyle   = pc.tint;   ctx.fill();
+      hexPath(cx, cy, s); ctx.strokeStyle = pc.stroke;  ctx.lineWidth = 1.5; ctx.stroke();
     }
   }
 
-  // 4. Flash animation overlays (respect fog of war)
+  // 4. Flash animation overlays (respect fog)
   if (flashMoves   && flashMoves.has(k)   && !hidden) { hexPath(cx, cy, s); ctx.fillStyle = 'rgba(80,160,255,0.55)'; ctx.fill(); }
   if (flashAttacks && flashAttacks.has(k) && !hidden) { hexPath(cx, cy, s); ctx.fillStyle = 'rgba(255,60,60,0.55)';  ctx.fill(); }
 
@@ -560,7 +623,7 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     hexPath(cx, cy, s); ctx.strokeStyle = 'rgba(255,100,100,0.75)'; ctx.lineWidth = 1.5; ctx.stroke();
   }
 
-  // 6. Selected glow (double ring)
+  // 6. Selected glow
   if (selected && selected.q === q && selected.r === r) {
     hexPath(cx, cy, s);
     ctx.strokeStyle = 'rgba(255,220,0,0.95)'; ctx.lineWidth = 3; ctx.stroke();
@@ -568,7 +631,7 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     ctx.strokeStyle = 'rgba(255,200,0,0.35)'; ctx.lineWidth = 5; ctx.stroke();
   }
 
-  // 6b. Keyboard cursor (cyan dashed ring)
+  // 6b. Keyboard cursor
   if (cursor && cursor.q === q && cursor.r === r) {
     ctx.save();
     hexPath(cx, cy, s);
@@ -593,19 +656,18 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     hexPath(cx, cy, s); ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2; ctx.stroke();
   }
 
-  // 8. Troop badge (hidden in fog of war)
+  // 8. Troop badge (hidden in fog)
   if (tile.type !== TILE_WALL && tile.troops > 0 && !hidden)
     drawTroopBadge(cx, cy, s, tile.troops, tile.owner);
 
-  // 9. Spawn counter dots (hidden in fog of war)
+  // 9. Spawn counter dots
   if (tile.type !== TILE_WALL && tile.owner !== OWNER_NONE && tile.troops > 0 && !hidden)
     drawSpawnCounter(cx, cy, s, tile.ownedTurns);
 
-  // 9b. "Spotted" indicator — own tile visible to enemy
+  // 9b. "Spotted" indicator
   if (tile.owner === currentViewer && tile.troops > 0 && isOwnTileSpotted(q, r, currentViewer)) {
     const ey = cy - s * 0.58;
     const er = Math.max(3, Math.floor(s * 0.15));
-    // orange diamond
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(cx, ey - er);
@@ -618,7 +680,6 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     ctx.strokeStyle = 'rgba(180,80,0,0.8)';
     ctx.lineWidth = 1;
     ctx.stroke();
-    // eye icon
     ctx.fillStyle = '#fff';
     ctx.font = `bold ${Math.max(5, Math.floor(s * 0.16))}px sans-serif`;
     ctx.textAlign = 'center';
@@ -631,11 +692,9 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
   const safeRadius = getStormRadius();
   const distCenter = hexDist(0, 0, q, r);
   if (turnNum >= stormStartTurn() && distCenter > safeRadius) {
-    // Active storm — purple haze
     hexPath(cx, cy, s);
     ctx.fillStyle = 'rgba(100, 20, 140, 0.38)';
     ctx.fill();
-    // Swirl marks
     ctx.save();
     hexPath(cx, cy, s); ctx.clip();
     ctx.globalAlpha = 0.18;
@@ -646,7 +705,6 @@ function drawHex(q, r, cx, cy, moveFromSet, moveToSet, atkFromSet, atkToSet, fla
     ctx.globalAlpha = 1;
     ctx.restore();
   } else if (turnNum >= stormStartTurn() - 2 && distCenter === safeRadius + 1 && distCenter <= HEX_RADIUS) {
-    // Warning zone — this ring will be storm in the next shrink
     hexPath(cx, cy, s);
     ctx.fillStyle = 'rgba(255, 160, 40, 0.18)';
     ctx.fill();
@@ -666,7 +724,8 @@ function drawTroopBadge(cx, cy, s, troops, owner) {
   ctx.fillStyle = 'rgba(0,0,0,0.5)';
   pathRoundRect(bx + 1.5, by + 1.5, bw, bh, rx); ctx.fill();
 
-  ctx.fillStyle = owner === OWNER_P1 ? '#1840a0' : owner === OWNER_P2 ? '#961818' : '#383838';
+  const pc = PLAYER_COLORS[owner];
+  ctx.fillStyle = pc ? pc.badge : '#383838';
   pathRoundRect(bx, by, bw, bh, rx); ctx.fill();
 
   ctx.fillStyle = 'rgba(255,255,255,0.2)';
@@ -699,10 +758,10 @@ function drawTooltip(originX, originY) {
   const { q, r } = tooltipTile;
   const tile = tiles.get(hexKey(q, r));
   if (!tile) return;
-  const currentViewer = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentViewer = phaseOwner();
   const hidden = isTileHiddenForViewer(q, r, currentViewer);
   const typeStr  = TILE_TYPE_LABELS[tile.type] ?? 'Unknown';
-  const ownerStr = hidden ? '???' : tile.owner === OWNER_P1 ? 'P1' : tile.owner === OWNER_P2 ? 'P2' : 'None';
+  const ownerStr = hidden ? '???' : tile.owner === OWNER_NONE ? 'None' : `P${tile.owner}`;
   const range    = getTileRange(tile);
   const inStorm  = hexDist(0, 0, q, r) > getStormRadius() && turnNum >= stormStartTurn();
   const lines    = [
@@ -744,16 +803,29 @@ const TILE_TYPE_LABELS = {
 };
 
 function updateHUD() {
-  let p1c = 0, p2c = 0;
+  const counts = {};
+  PLAYERS.forEach(p => counts[p] = 0);
   for (const tile of tiles.values()) {
-    if (tile.owner === OWNER_P1) p1c++;
-    if (tile.owner === OWNER_P2) p2c++;
+    if (tile.owner !== OWNER_NONE) counts[tile.owner]++;
   }
-  document.getElementById('p1-tiles').textContent = `Tiles: ${p1c}`;
-  document.getElementById('p2-tiles').textContent = `Tiles: ${p2c}`;
-  document.getElementById('turn-num').textContent  = turnNum;
+  for (const p of PLAYERS) {
+    const el   = document.getElementById(`phud-tiles-${p}`);
+    const item = document.getElementById(`phud-${p}`);
+    if (el) el.textContent = counts[p];
+    if (item) {
+      if (!isPlayerActive(p)) {
+        item.classList.add('off');
+        item.classList.remove('dead');
+      } else if (!isPlayerAlive(p) && turnNum > 1) {
+        item.classList.add('dead');
+        item.classList.remove('off');
+      } else {
+        item.classList.remove('dead', 'off');
+      }
+    }
+  }
+  document.getElementById('turn-num').textContent = turnNum;
 
-  // Storm HUD
   const stormEl = document.getElementById('storm-info');
   const safeR   = getStormRadius();
   if (turnNum < stormStartTurn()) {
@@ -769,76 +841,64 @@ function updateHUD() {
   }
 }
 
-// ─── AI vs AI helpers ───────────────────────────────────────────────────────
-function isAiVsAi() { return aiDifficultyP1 !== 'off' && aiDifficulty !== 'off'; }
-
+// ─── Spectate / AI helpers ────────────────────────────────────────────────────
 function toggleAiVsAiPause() {
   aiVsAiPaused = !aiVsAiPaused;
   const btn = document.getElementById('ai-vs-ai-pause');
-  btn.textContent = aiVsAiPaused ? '▶ Resume' : '⏸ Pause';
+  btn.textContent = aiVsAiPaused ? '\u25b6 Resume' : '\u23f8 Pause';
   if (!aiVsAiPaused) scheduleAiTurnIfNeeded();
-  const p1IsAi = aiDifficultyP1 !== 'off';
-  const p2IsAi = aiDifficulty   !== 'off';
-  const status = aiVsAiPaused ? '⏸ Paused' : '▶ Running';
-  if (p1IsAi && p2IsAi)
-    document.getElementById('phase-label').textContent = `AI vs AI — Turn ${turnNum}  [${status}]`;
+  if (isSpectateMode()) {
+    const status = aiVsAiPaused ? '\u23f8 Paused' : '\u25b6 Running';
+    document.getElementById('phase-label').textContent = `All AI \u2014 Turn ${turnNum}  [${status}]`;
+  }
 }
 
 function scheduleAiTurnIfNeeded() {
   clearTimeout(aiVsAiTimerId);
   aiVsAiTimerId = null;
   if (aiVsAiPaused) return;
-  const p1IsAi = aiDifficultyP1 !== 'off';
-  const p2IsAi = aiDifficulty   !== 'off';
-  const currentIsAi = (phase === PHASE_P1 && p1IsAi) || (phase === PHASE_P2 && p2IsAi);
-  if (!currentIsAi) return;
-  aiVsAiTimerId = setTimeout(doAiTurn, AI_VS_AI_DELAY);
+  if (!isSpectateMode()) return;
+  aiVsAiTimerId = setTimeout(doAllAiTurn, AI_VS_AI_DELAY);
 }
 
-function doAiTurn() {
+function doAllAiTurn() {
   aiVsAiTimerId = null;
-  if (phase === PHASE_P1 && aiDifficultyP1 !== 'off') {
-    makeAIPlansFor(OWNER_P1, aiDifficultyP1);
-    onBtnDone();
-  } else if (phase === PHASE_P2 && aiDifficulty !== 'off') {
-    makeAIPlansFor(OWNER_P2, aiDifficulty);
-    animateAndResolveTurn();
+  const alive = getAlivePlayers();
+  for (const p of alive) {
+    makeAIPlansFor(p, aiDifficulties[p]);
   }
+  animateAndResolveTurn();
 }
 
 function updatePhaseLabel() {
-  const p1IsAi = aiDifficultyP1 !== 'off';
-  const p2IsAi = aiDifficulty   !== 'off';
-  const ai2ai  = p1IsAi && p2IsAi;
-
-  document.getElementById('ai-vs-ai-pause').classList.toggle('hidden', !ai2ai);
+  const spectate = isSpectateMode();
+  document.getElementById('ai-vs-ai-pause').classList.toggle('hidden', !spectate);
 
   let label;
-  if (ai2ai) {
-    const status = aiVsAiPaused ? '⏸ Paused' : '▶ Running';
-    label = `AI vs AI — Turn ${turnNum}  [${status}]`;
-  } else if (phase === PHASE_P1) {
-    label = p1IsAi
-      ? `AI P1 (${aiDifficultyP1}) is planning…`
-      : "Player 1's Turn — Select a tile";
+  if (spectate) {
+    const status = aiVsAiPaused ? '\u23f8 Paused' : '\u25b6 Running';
+    label = `All AI \u2014 Turn ${turnNum}  [${status}]`;
   } else {
-    label = p2IsAi
-      ? `AI P2 (${aiDifficulty}) is planning…`
-      : "Player 2's Turn — Select a tile";
+    const owner = phaseOwner();
+    if (isPlayerAI(owner)) {
+      label = `AI P${owner} (${aiDifficulties[owner]}) is planning\u2026`;
+    } else {
+      label = `Player ${owner}'s Turn \u2014 Select a tile`;
+    }
   }
   document.getElementById('phase-label').textContent = label;
   updatePlanCounter();
   updateMobileBar();
-  scheduleAiTurnIfNeeded();
+  if (spectate) scheduleAiTurnIfNeeded();
 }
 
 function showTileInfo(q, r) {
   const tile = tiles.get(hexKey(q, r));
   if (!tile) return;
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentOwner = phaseOwner();
   const hidden = isTileHiddenForViewer(q, r, currentOwner);
   const typeStr  = TILE_TYPE_LABELS[tile.type] ?? 'Unknown';
-  const ownerStr = hidden ? '???' : tile.owner === OWNER_P1 ? 'Player 1' : tile.owner === OWNER_P2 ? 'Player 2' : 'None';
+  const ownerStr = hidden ? '???' : tile.owner === OWNER_NONE ? 'None' : `Player ${tile.owner}`;
   const troopStr = hidden ? '???' : tile.troops;
   document.getElementById('tile-detail').textContent =
     `(${q},${r}) ${typeStr} | Owner: ${ownerStr} | Troops: ${troopStr}`;
@@ -864,8 +924,8 @@ function clearLog() {
 }
 
 function updatePlanCounter() {
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
-  const currentPlans = plans[currentOwner];
+  const currentOwner = phaseOwner();
+  const currentPlans = plans[currentOwner] || [];
   const moves   = currentPlans.filter(p => p.kind === 'move').length;
   const attacks = currentPlans.filter(p => p.kind === 'attack').length;
   const el = document.getElementById('plan-counter');
@@ -879,7 +939,7 @@ function updatePlanCounter() {
 
 function addLog(msg, cssClass) {
   eventLog.unshift({ msg, cssClass: cssClass || '' });
-  if (eventLog.length > 10) eventLog.pop();
+  if (eventLog.length > 20) eventLog.pop();
   const ul = document.getElementById('event-log');
   ul.innerHTML = '';
   for (const entry of eventLog) {
@@ -972,8 +1032,8 @@ function onBtnCancel() {
 }
 
 function onBtnUndo() {
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
-  if (plans[currentOwner].length === 0) return;
+  const currentOwner = phaseOwner();
+  if (!plans[currentOwner] || plans[currentOwner].length === 0) return;
   const removed = plans[currentOwner].pop();
   addLog(`Undo: removed ${removed.kind} plan from (${removed.from.q},${removed.from.r})`);
   pendingAction  = null;
@@ -989,39 +1049,22 @@ function onBtnUndo() {
 function onKeyDown(e) {
   if (e.target.matches('input, select, textarea')) return;
 
-  // ── Flat-top hex navigation: T Y H B V F ─────────────────────────────────
-  // T=NW(0,-1)  Y=NE(+1,-1)  H=E(+1,0)  B=SE(0,+1)  V=SW(-1,+1)  F=W(-1,0)
   const hexKeyMap = { t:[0,-1], y:[1,-1], h:[1,0], b:[0,1], v:[-1,1], f:[-1,0] };
   const lk = e.key.toLowerCase();
-  if (lk in hexKeyMap) {
-    e.preventDefault();
-    moveCursor(...hexKeyMap[lk]);
-    return;
-  }
+  if (lk in hexKeyMap) { e.preventDefault(); moveCursor(...hexKeyMap[lk]); return; }
 
-  // ── Arrow keys: 4 of the 6 hex directions ────────────────────────────────
   const arrowMap = { ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1] };
-  if (e.key in arrowMap) {
-    e.preventDefault();
-    moveCursor(...arrowMap[e.key]);
-    return;
-  }
+  if (e.key in arrowMap) { e.preventDefault(); moveCursor(...arrowMap[e.key]); return; }
 
-  // ── Enter / Space ─────────────────────────────────────────────────────────
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault();
     const passOverlay = document.getElementById('pass-overlay');
     if (!passOverlay.classList.contains('hidden')) { onPassReady(); return; }
-    if (cursor) {
-      playSound('select');
-      handleTileClick(cursor.q, cursor.r);
-    } else {
-      onBtnDone();
-    }
+    if (cursor) { playSound('select'); handleTileClick(cursor.q, cursor.r); }
+    else { onBtnDone(); }
     return;
   }
 
-  // ── Letter shortcuts ──────────────────────────────────────────────────────
   const k = e.key.toUpperCase();
   if (k === 'M') {
     const btn = document.getElementById('btn-move');
@@ -1053,7 +1096,7 @@ function moveCursor(dq, dr) {
 
 // ─── Valid target sets ────────────────────────────────────────────────────────
 function getValidMoveTiles(q, r) {
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentOwner = phaseOwner();
   const result = new Set();
   for (const [nq, nr] of hexNeighbors(q, r)) {
     const t = tiles.get(hexKey(nq, nr));
@@ -1065,12 +1108,11 @@ function getValidMoveTiles(q, r) {
 }
 
 function getValidAtkTiles(q, r) {
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentOwner = phaseOwner();
   const result = new Set();
   for (const [tq, tr] of allHexes()) {
     const t = tiles.get(hexKey(tq, tr));
     if (!t || t.owner === OWNER_NONE || t.owner === currentOwner) continue;
-    // Fog of War: can only target revealed enemies (AI bypasses this via own logic)
     if (isTileHiddenForViewer(tq, tr, currentOwner)) continue;
     if (canAttack(q, r, tq, tr)) result.add(hexKey(tq, tr));
   }
@@ -1079,7 +1121,7 @@ function getValidAtkTiles(q, r) {
 
 // ─── Planning ─────────────────────────────────────────────────────────────────
 function tryPlanMove(q, r) {
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentOwner = phaseOwner();
   const from = selected;
   const tile = tiles.get(hexKey(q, r));
   if (hexDist(from.q, from.r, q, r) !== 1) {
@@ -1105,7 +1147,7 @@ function tryPlanMove(q, r) {
 }
 
 function tryPlanAttack(q, r) {
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
+  const currentOwner = phaseOwner();
   const from = selected;
   const tile = tiles.get(hexKey(q, r));
   if (isTileHiddenForViewer(q, r, currentOwner)) {
@@ -1154,37 +1196,64 @@ function wallBlocksShot(fq, fr, tq, tr) {
   return false;
 }
 
-// ─── Turn / Done ──────────────────────────────────────────────────────────────
+// ─── Turn / Done (6-player phase cycling) ─────────────────────────────────────
 function onBtnDone() {
-  if (phase === PHASE_P1) {
-    selected       = null;
-    pendingAction  = null;
-    validMoveTiles = new Set();
-    validAtkTiles  = new Set();
-    render();
-    hideTileInfo();
-    if (aiDifficulty !== 'off') {
-      // P2 is AI — plan and resolve immediately (covers AI vs AI and human P1 vs AI P2)
-      makeAIPlans();
-      animateAndResolveTurn();
-    } else {
-      // P2 is human — show pass overlay
-      document.getElementById('pass-title').textContent = 'Pass to Player 2';
-      document.getElementById('pass-msg').textContent   = 'Player 1 has finished planning. Hand the device to Player 2.';
-      document.getElementById('resolution-summary').classList.add('hidden');
-      document.getElementById('pass-overlay').classList.remove('hidden');
-      document.getElementById('ai-difficulty').disabled = true;
-      phase = PHASE_P2;
+  selected       = null;
+  pendingAction  = null;
+  validMoveTiles = new Set();
+  validAtkTiles  = new Set();
+  render();
+  hideTileInfo();
+  planIndex++;
+  advancePlanning();
+}
+
+function advancePlanning() {
+  // Skip AI players — auto-plan them
+  while (planIndex < turnOrder.length) {
+    const owner = turnOrder[planIndex];
+    if (isPlayerAI(owner)) {
+      makeAIPlansFor(owner, aiDifficulties[owner]);
+      planIndex++;
+      continue;
     }
-  } else {
-    document.getElementById('pass-overlay').classList.add('hidden');
-    animateAndResolveTurn();
+    // Human player
+    phase = ownerPhase(owner);
+    if (gameJustStarted) {
+      gameJustStarted = false;
+      updatePhaseLabel();
+      render();
+      updateHUD();
+    } else {
+      showPassOverlayForPlayer(owner);
+    }
+    return;
   }
+  // All have planned → resolve
+  animateAndResolveTurn();
+}
+
+function showPassOverlayForPlayer(owner, summary) {
+  const pc = PLAYER_COLORS[owner];
+  if (summary) {
+    document.getElementById('pass-title').textContent = `Turn ${turnNum} \u2014 Player ${owner}'s Planning Phase`;
+    document.getElementById('pass-msg').textContent   = 'Results resolved! Review the summary, then plan your moves.';
+    const summaryEl = document.getElementById('resolution-summary');
+    summaryEl.classList.remove('hidden');
+    document.getElementById('summary-moves').textContent   = summary.moves;
+    document.getElementById('summary-attacks').textContent = summary.attacks;
+    document.getElementById('summary-kills').textContent   = summary.kills;
+    document.getElementById('summary-mutual').textContent  = summary.mutual;
+  } else {
+    document.getElementById('pass-title').textContent = `Pass to Player ${owner}`;
+    document.getElementById('pass-msg').textContent   = `Hand the device to Player ${owner} (${pc ? pc.name : ''}).`;
+    document.getElementById('resolution-summary').classList.add('hidden');
+  }
+  document.getElementById('pass-overlay').classList.remove('hidden');
 }
 
 function onPassReady() {
   document.getElementById('pass-overlay').classList.add('hidden');
-  document.getElementById('ai-difficulty').disabled = false;
   selected       = null;
   pendingAction  = null;
   validMoveTiles = new Set();
@@ -1192,16 +1261,18 @@ function onPassReady() {
   render();
   hideTileInfo();
   updatePhaseLabel();
+  updateHUD();
 }
 
 // ─── Animated turn resolution ─────────────────────────────────────────────────
 function animateAndResolveTurn() {
   const flashMoveSet = new Set();
   const flashAtkSet  = new Set();
-  for (const owner of [OWNER_P1, OWNER_P2]) {
-    for (const p of plans[owner]) {
-      if (p.kind === 'move')   flashMoveSet.add(hexKey(p.to.q, p.to.r));
-      if (p.kind === 'attack') flashAtkSet.add(hexKey(p.to.q,  p.to.r));
+  for (const p of PLAYERS) {
+    if (!plans[p]) continue;
+    for (const plan of plans[p]) {
+      if (plan.kind === 'move')   flashMoveSet.add(hexKey(plan.to.q, plan.to.r));
+      if (plan.kind === 'attack') flashAtkSet.add(hexKey(plan.to.q,  plan.to.r));
     }
   }
   render(flashMoveSet, flashAtkSet);
@@ -1212,16 +1283,15 @@ function animateAndResolveTurn() {
 function resolveTurn() {
   const summary = { moves: 0, attacks: 0, kills: 0, mutual: 0 };
 
-  // Snapshot troop totals for draw tiebreaker
-  preResolveTroops = { p1: 0, p2: 0 };
+  // Snapshot troop totals for tiebreaker
+  preResolveTroops = {};
+  for (const p of PLAYERS) preResolveTroops[p] = 0;
   for (const tile of tiles.values()) {
-    if (tile.owner === OWNER_P1) preResolveTroops.p1 += tile.troops;
-    if (tile.owner === OWNER_P2) preResolveTroops.p2 += tile.troops;
+    if (tile.owner !== OWNER_NONE) preResolveTroops[tile.owner] += tile.troops;
   }
 
-  // Clear previous fog-of-war reveals (new ones set in resolveAttacks)
-  revealedTiles[OWNER_P1] = new Set();
-  revealedTiles[OWNER_P2] = new Set();
+  // Clear previous fog reveals
+  resetRevealedTiles();
 
   resolveMovement(summary);
   resolveAttacks(summary);
@@ -1229,62 +1299,68 @@ function resolveTurn() {
   resolveStorm(summary);
 
   turnNum++;
-  plans          = { [OWNER_P1]: [], [OWNER_P2]: [] };
-  phase          = PHASE_P1;
+  resetPlans();
   selected       = null;
   pendingAction  = null;
   validMoveTiles = new Set();
   validAtkTiles  = new Set();
 
+  document.getElementById('pass-overlay').classList.add('hidden');
   render();
   updateHUD();
   hideTileInfo();
 
-  if (isAiVsAi()) {
-    // Spectate mode: skip pass overlay, log summary, auto-continue
+  const winResult = checkWin();
+  if (winResult) return;
+
+  if (isSpectateMode()) {
+    // All AI — spectate mode: log and auto-continue
     addLog(`Turn ${turnNum - 1} \u2014 ${summary.moves} mv, ${summary.attacks} atk, ${summary.kills} kills`);
-    checkWin();
-    if (document.getElementById('win-overlay').classList.contains('hidden')) {
-      updatePhaseLabel(); // updates label + schedules next AI turn
-    }
+    updatePhaseLabel(); // scheduleAiTurnIfNeeded is called
   } else {
-    document.getElementById('pass-title').textContent = `Turn ${turnNum} \u2014 Player 1's Planning Phase`;
-    document.getElementById('pass-msg').textContent   = "Results resolved! Now it is Player 1's turn to plan.";
-    document.getElementById('ai-difficulty').disabled = false;
+    // Set up next turn planning
+    turnOrder = getAlivePlayers();
+    planIndex = 0;
 
-    const summaryEl = document.getElementById('resolution-summary');
-    summaryEl.classList.remove('hidden');
-    document.getElementById('summary-moves').textContent   = summary.moves;
-    document.getElementById('summary-attacks').textContent = summary.attacks;
-    document.getElementById('summary-kills').textContent   = summary.kills;
-    document.getElementById('summary-mutual').textContent  = summary.mutual;
+    // Skip leading AIs (auto-plan them)
+    while (planIndex < turnOrder.length && isPlayerAI(turnOrder[planIndex])) {
+      makeAIPlansFor(turnOrder[planIndex], aiDifficulties[turnOrder[planIndex]]);
+      planIndex++;
+    }
 
-    document.getElementById('pass-overlay').classList.remove('hidden');
-    checkWin();
-    updatePhaseLabel();
+    if (planIndex < turnOrder.length) {
+      const nextHuman = turnOrder[planIndex];
+      phase = ownerPhase(nextHuman);
+      showPassOverlayForPlayer(nextHuman, summary);
+    } else {
+      // All remaining alive are AI (human just died) — spectate mode kicks in
+      animateAndResolveTurn();
+    }
   }
 }
 
 function resolveMovement(summary) {
   const moves = [];
-  for (const owner of [OWNER_P1, OWNER_P2])
+  for (const owner of PLAYERS) {
+    if (!plans[owner]) continue;
     for (const p of plans[owner]) {
       if (p.kind !== 'move') continue;
       const ft = tiles.get(hexKey(p.from.q, p.from.r));
       if (!ft || ft.owner !== owner || ft.troops === 0) continue;
       moves.push({ owner, from: p.from, to: p.to });
     }
+  }
 
   const destOwners = {};
   for (const mv of moves) {
     const k = hexKey(mv.to.q, mv.to.r);
-    if (!destOwners[k]) destOwners[k] = [];
-    if (!destOwners[k].includes(mv.owner)) destOwners[k].push(mv.owner);
+    if (!destOwners[k]) destOwners[k] = new Set();
+    destOwners[k].add(mv.owner);
   }
   const contestedKeys = new Set();
   for (const k in destOwners) {
     const dest = tiles.get(k);
-    if (destOwners[k].length >= 2 && dest && dest.owner === OWNER_NONE) {
+    if (destOwners[k].size >= 2 && dest && dest.owner === OWNER_NONE) {
       contestedKeys.add(k);
       const { q, r } = decodeKey(k);
       addLog(`Contested move to (${q},${r})! Neither move succeeds.`);
@@ -1319,18 +1395,22 @@ function resolveMovement(summary) {
 
 function resolveAttacks(summary) {
   const attacks = [];
-  for (const owner of [OWNER_P1, OWNER_P2])
+  for (const owner of PLAYERS) {
+    if (!plans[owner]) continue;
     for (const p of plans[owner]) {
       if (p.kind !== 'attack') continue;
       const ft = tiles.get(hexKey(p.from.q, p.from.r));
       if (!ft || ft.owner !== owner || ft.troops === 0) continue;
       attacks.push({ owner, from: p.from, to: p.to });
     }
+  }
 
-  // Fog of War: every attacker becomes visible to the opponent
+  // Fog: attacker revealed to the DEFENDER
   for (const atk of attacks) {
-    const enemy = atk.owner === OWNER_P1 ? OWNER_P2 : OWNER_P1;
-    revealedTiles[enemy].add(hexKey(atk.from.q, atk.from.r));
+    const targetTile = tiles.get(hexKey(atk.to.q, atk.to.r));
+    if (targetTile && targetTile.owner !== OWNER_NONE && targetTile.owner !== atk.owner) {
+      revealedTiles[targetTile.owner].add(hexKey(atk.from.q, atk.from.r));
+    }
   }
 
   const attackMap = {};
@@ -1395,12 +1475,11 @@ function resolveSpawn() {
 }
 
 // ─── Storm ────────────────────────────────────────────────────────────────────
-// Storm timing scales with map size so larger maps get more buildup time
-function stormStartTurn() { return Math.max(10, 6 + HEX_RADIUS * 2); }
-function stormShrinkInterval() { return Math.max(2, Math.floor(2 + HEX_RADIUS * 0.5)); }
+function stormStartTurn()     { return Math.max(10, 6 + HEX_RADIUS * 2); }
+function stormShrinkInterval(){ return Math.max(2, Math.floor(2 + HEX_RADIUS * 0.5)); }
 
 function getStormRadius() {
-  const start = stormStartTurn();
+  const start    = stormStartTurn();
   const interval = stormShrinkInterval();
   if (turnNum < start) return HEX_RADIUS;
   const shrinks = 1 + Math.floor((turnNum - start) / interval);
@@ -1409,7 +1488,7 @@ function getStormRadius() {
 
 function resolveStorm(summary) {
   const safeR = getStormRadius();
-  if (safeR >= HEX_RADIUS) return; // no storm yet
+  if (safeR >= HEX_RADIUS) return;
   for (const [q, r] of allHexes()) {
     if (hexDist(0, 0, q, r) <= safeR) continue;
     const tile = tiles.get(hexKey(q, r));
@@ -1429,10 +1508,7 @@ function resolveStorm(summary) {
 }
 
 // ─── AI Opponent ──────────────────────────────────────────────────────────────
-function makeAIPlans() { makeAIPlansFor(OWNER_P2, aiDifficulty); }
-
-// Shared AI helpers ──────────────────────────────────────────────────────────
-// Storm urgency: 0 = no storm soon, 1+ = increasingly urgent to get inside
+// Shared AI helpers
 function stormUrgency() {
   const turnsToStorm = stormStartTurn() - turnNum;
   if (turnsToStorm > 4) return 0;
@@ -1441,38 +1517,30 @@ function stormUrgency() {
 }
 
 function stormPenalty(tq, tr) {
-  const safeR = getStormRadius();
-  const dist  = hexDist(0, 0, tq, tr);
+  const safeR   = getStormRadius();
+  const dist    = hexDist(0, 0, tq, tr);
   const urgency = stormUrgency();
-  // Already in storm — massive penalty that grows over time
   if (dist > safeR) return -30 - urgency * 15;
-  // On the edge and storm is near — anticipatory retreat pressure
   if (dist === safeR && urgency >= 1) return -10 - urgency * 5;
-  // 1 ring from edge with storm incoming
   if (dist === safeR - 1 && urgency >= 2) return -4 - urgency * 2;
-  // Reward being close to center when storm is active
   if (urgency >= 1) return Math.max(0, (safeR - dist)) * urgency * 0.5;
   return 0;
 }
 
-// Flanking: reward positions on the opposite side of an enemy from other friendlies
 function flankBonus(mq, mr, enemyTiles, myOwner) {
   if (enemyTiles.length === 0) return 0;
   const myTiles = getOwnerTiles(myOwner);
   if (myTiles.length <= 1) return 0;
   let bonus = 0;
   for (const enemy of enemyTiles) {
-    // Direction from enemy to candidate move
     const dq1 = mq - enemy.q, dr1 = mr - enemy.r;
-    // Check if at least one friendly is on the opposite side
     for (const ally of myTiles) {
       if (ally.q === mq && ally.r === mr) continue;
       const dq2 = ally.q - enemy.q, dr2 = ally.r - enemy.r;
-      // Dot product < 0 means they're on opposite sides of the enemy
       const dot = dq1 * dq2 + dr1 * dr2;
       if (dot < 0 && hexDist(mq, mr, enemy.q, enemy.r) <= 3) {
         bonus += 4;
-        break; // one flank per enemy is enough
+        break;
       }
     }
   }
@@ -1485,7 +1553,6 @@ function makeAIPlansFor(myOwner, difficulty) {
   else if (difficulty === 'hard')   makeAIPlansHardFor(myOwner);
 }
 
-// Fog of War for AI: can this AI player see the given tile?
 function aiCanSee(q, r, myOwner) {
   return !isTileHiddenForViewer(q, r, myOwner);
 }
@@ -1508,6 +1575,16 @@ function getOwnerTiles(owner) {
   return result;
 }
 
+function getVisibleEnemyTiles(myOwner) {
+  const result = [];
+  for (const [q, r] of allHexes()) {
+    const t = tiles.get(hexKey(q, r));
+    if (t.owner !== OWNER_NONE && t.owner !== myOwner && t.troops > 0 && aiCanSee(q, r, myOwner))
+      result.push({ q, r, troops: t.troops, owner: t.owner });
+  }
+  return result;
+}
+
 function getUncontrolledHills(myOwner) {
   const hills = [];
   for (const [q, r] of allHexes()) {
@@ -1517,12 +1594,9 @@ function getUncontrolledHills(myOwner) {
   return hills;
 }
 
+// ── Easy AI ─────────────────────────────────────────────────────────────────
 function makeAIPlansEasyFor(myOwner) {
-  // Pure aggression: always attack weakest enemy in range; always charge nearest enemy.
-  const enemyOwner = myOwner === OWNER_P1 ? OWNER_P2 : OWNER_P1;
   plans[myOwner] = [];
-
-  // Strongest units act first so they lead the assault
   const myTileList = [];
   for (const [q, r] of allHexes()) {
     const t = tiles.get(hexKey(q, r));
@@ -1533,11 +1607,11 @@ function makeAIPlansEasyFor(myOwner) {
   for (const { q, r } of myTileList) {
     if (plans[myOwner].some(p => p.from.q === q && p.from.r === r)) continue;
 
-    // Attack: pick weakest visible enemy in range
+    // Attack: weakest visible enemy in range (any opponent)
     const atkTargets = [];
     for (const [tq, tr] of allHexes()) {
       const t = tiles.get(hexKey(tq, tr));
-      if (t.owner === enemyOwner && aiCanSee(tq, tr, myOwner) && canAttack(q, r, tq, tr))
+      if (t.owner !== OWNER_NONE && t.owner !== myOwner && t.troops > 0 && aiCanSee(tq, tr, myOwner) && canAttack(q, r, tq, tr))
         atkTargets.push({ q: tq, r: tr, troops: t.troops });
     }
     if (atkTargets.length > 0) {
@@ -1548,14 +1622,11 @@ function makeAIPlansEasyFor(myOwner) {
       continue;
     }
 
-    // Move: charge nearest visible enemy; if none visible, seek hills for vision
+    // Move
     const moveable = getAIMoveOptionsFor(q, r, myOwner);
-    const enemyTiles = getOwnerTiles(enemyOwner).filter(e => aiCanSee(e.q, e.r, myOwner));
-    const safeR = getStormRadius();
-    const inStorm = hexDist(0, 0, q, r) > safeR;
+    const enemyTiles = getVisibleEnemyTiles(myOwner);
     const curTile = tiles.get(hexKey(q, r));
 
-    // Score staying put
     let stayScore = 0;
     const spawnProgress = curTile.ownedTurns || 0;
     stayScore += spawnProgress * 3;
@@ -1586,20 +1657,15 @@ function makeAIPlansEasyFor(myOwner) {
   }
 }
 
+// ── Medium AI ────────────────────────────────────────────────────────────────
 function makeAIPlansMediumFor(myOwner) {
-  // Coordinated focus fire + aggressive scored movement. Never idles.
-  const enemyOwner = myOwner === OWNER_P1 ? OWNER_P2 : OWNER_P1;
   plans[myOwner] = [];
-
-  // Track damage committed to each target this turn so units can pile on for kills
   const pendingDmg = {};
-
   const myTileList = [];
   for (const [q, r] of allHexes()) {
     const t = tiles.get(hexKey(q, r));
     if (t.owner === myOwner && t.troops > 0) myTileList.push({ q, r, troops: t.troops });
   }
-  // Strongest + hill units act first (most impact up front)
   myTileList.sort((a, b) => {
     const aHill = hillRange(tiles.get(hexKey(a.q, a.r)).type);
     const bHill = hillRange(tiles.get(hexKey(b.q, b.r)).type);
@@ -1609,17 +1675,15 @@ function makeAIPlansMediumFor(myOwner) {
   for (const { q, r } of myTileList) {
     if (plans[myOwner].some(p => p.from.q === q && p.from.r === r)) continue;
 
-    // Build attack options with focus-fire awareness (fog-limited)
     const atkTargets = [];
     for (const [tq, tr] of allHexes()) {
       const t = tiles.get(hexKey(tq, tr));
-      if (t.owner !== enemyOwner || !aiCanSee(tq, tr, myOwner) || !canAttack(q, r, tq, tr)) continue;
+      if (t.owner === OWNER_NONE || t.owner === myOwner || !aiCanSee(tq, tr, myOwner) || !canAttack(q, r, tq, tr)) continue;
       const k = hexKey(tq, tr);
       const remainingHP = t.troops - (pendingDmg[k] || 0);
       atkTargets.push({ q: tq, r: tr, troops: t.troops, remainingHP, k });
     }
     if (atkTargets.length > 0) {
-      // Kill shots first, then pile onto already-damaged targets, then weakest
       atkTargets.sort((a, b) => {
         const aKill = a.remainingHP <= 1 ? 0 : 1;
         const bKill = b.remainingHP <= 1 ? 0 : 1;
@@ -1634,14 +1698,11 @@ function makeAIPlansMediumFor(myOwner) {
       continue;
     }
 
-    // Move: scored by hill value, attack coverage, enemy adjacency, flanking, storm
     const moveable = getAIMoveOptionsFor(q, r, myOwner);
-    const enemyTiles = getOwnerTiles(enemyOwner).filter(e => aiCanSee(e.q, e.r, myOwner));
-    const safeR = getStormRadius();
+    const enemyTiles = getVisibleEnemyTiles(myOwner);
     const curTile = tiles.get(hexKey(q, r));
     const curRange = getTileRange(curTile);
 
-    // Score staying put — reward spawn buildup and strong positions
     let stayScore = 0;
     const spawnProgress = curTile.ownedTurns || 0;
     stayScore += spawnProgress * 3;
@@ -1662,7 +1723,6 @@ function makeAIPlansMediumFor(myOwner) {
     for (const mt of moveable) {
       const destType = tiles.get(hexKey(mt.q, mt.r)).type;
       let score = 0;
-
       if (enemyTiles.length > 0) {
         const distToEnemy = Math.min(...enemyTiles.map(pt => hexDist(mt.q, mt.r, pt.q, pt.r)));
         score = -distToEnemy * 2;
@@ -1674,10 +1734,8 @@ function makeAIPlansMediumFor(myOwner) {
       } else {
         score = -hexDist(0, 0, mt.q, mt.r);
       }
-
       if (isHillType(destType)) score += 4 + hillRange(destType) + hillVisibility(destType) * 2;
       score += stormPenalty(mt.q, mt.r);
-
       if (score > bestScore) { bestScore = score; best = mt; }
     }
     if (best) {
@@ -1687,88 +1745,76 @@ function makeAIPlansMediumFor(myOwner) {
   }
 }
 
+// ── Hard AI ─────────────────────────────────────────────────────────────────
 function makeAIPlansHardFor(myOwner) {
-  // Phase 1: Identify guaranteed kills and assign minimum attackers to secure them.
-  // Phase 2: Remaining units attack with focus-fire or move with scored positioning.
-  // Blitz mode when dominating: maximum aggression, ignore defensive positioning.
-  const enemyOwner  = myOwner === OWNER_P1 ? OWNER_P2 : OWNER_P1;
-  plans[myOwner]    = [];
+  plans[myOwner] = [];
 
-  const enemyTilesAll = getOwnerTiles(enemyOwner)
-    .filter(e => aiCanSee(e.q, e.r, myOwner))
-    .map(({ q, r }) => ({
-      q, r, k: hexKey(q, r),
-      troops: tiles.get(hexKey(q, r)).troops,
-      type:   tiles.get(hexKey(q, r)).type,
-    }));
+  const enemyTilesAll = getVisibleEnemyTiles(myOwner).map(e => ({
+    ...e,
+    k:    hexKey(e.q, e.r),
+    type: tiles.get(hexKey(e.q, e.r)).type,
+  }));
   const myTilesAll = getOwnerTiles(myOwner).map(({ q, r }) => ({
-    q, r, k: hexKey(q, r),
+    q, r,
+    k:      hexKey(q, r),
     troops: tiles.get(hexKey(q, r)).troops,
     type:   tiles.get(hexKey(q, r)).type,
   }));
 
   if (myTilesAll.length === 0) return;
 
-  const pendingDmg = {}; // hexKey → total damage committed this turn
-  const assigned   = new Set(); // unit keys that already have a plan
+  const pendingDmg = {};
+  const assigned   = new Set();
 
-  // ── Phase 1: Kill planning (only if enemies visible) ───────────────────────
+  // ── Phase 1: Kill planning ────────────────────────────────────────────────
   if (enemyTilesAll.length > 0) {
-  // For each enemy, collect all friendly units that can attack it.
-  // If attackers ≥ enemy.troops, this is a guaranteed kill — commit the minimum.
-  const killTargets = enemyTilesAll
-    .map(enemy => ({
-      enemy,
-      attackers: myTilesAll.filter(u => canAttack(u.q, u.r, enemy.q, enemy.r)),
-    }))
-    .filter(({ enemy, attackers }) => attackers.length >= enemy.troops)
-    .sort((a, b) =>
-      // Prioritise cheapest kills (fewer troops), then those needing fewest of our units
-      a.enemy.troops - b.enemy.troops || a.attackers.length - b.attackers.length
-    );
+    const killTargets = enemyTilesAll
+      .map(enemy => ({
+        enemy,
+        attackers: myTilesAll.filter(u => canAttack(u.q, u.r, enemy.q, enemy.r)),
+      }))
+      .filter(({ enemy, attackers }) => attackers.length >= enemy.troops)
+      .sort((a, b) =>
+        a.enemy.troops - b.enemy.troops || a.attackers.length - b.attackers.length
+      );
 
-  for (const { enemy, attackers } of killTargets) {
-    pendingDmg[enemy.k] = pendingDmg[enemy.k] || 0;
-    const alreadyDmg = pendingDmg[enemy.k];
-    const stillNeed  = enemy.troops - alreadyDmg;
-    if (stillNeed <= 0) continue; // another kill already covered this
+    for (const { enemy, attackers } of killTargets) {
+      pendingDmg[enemy.k] = pendingDmg[enemy.k] || 0;
+      const alreadyDmg = pendingDmg[enemy.k];
+      const stillNeed  = enemy.troops - alreadyDmg;
+      if (stillNeed <= 0) continue;
 
-    // Choose 'stillNeed' unassigned attackers; prefer units with fewest attack options
-    // (save versatile units for other targets)
-    const avail = attackers
-      .filter(u => !assigned.has(u.k))
-      .sort((a, b) => {
-        const aOpts = enemyTilesAll.filter(e => canAttack(a.q, a.r, e.q, e.r)).length;
-        const bOpts = enemyTilesAll.filter(e => canAttack(b.q, b.r, e.q, e.r)).length;
-        return aOpts - bOpts;
-      });
+      const avail = attackers
+        .filter(u => !assigned.has(u.k))
+        .sort((a, b) => {
+          const aOpts = enemyTilesAll.filter(e => canAttack(a.q, a.r, e.q, e.r)).length;
+          const bOpts = enemyTilesAll.filter(e => canAttack(b.q, b.r, e.q, e.r)).length;
+          return aOpts - bOpts;
+        });
 
-    if (avail.length < stillNeed) continue; // can't secure kill without already-assigned units
+      if (avail.length < stillNeed) continue;
 
-    for (let i = 0; i < stillNeed; i++) {
-      const u = avail[i];
-      assigned.add(u.k);
-      pendingDmg[enemy.k]++;
-      plans[myOwner].push({ kind: 'attack', from: { q: u.q, r: u.r }, to: { q: enemy.q, r: enemy.r } });
-      addLog(`AI P${myOwner} KO (${u.q},${u.r})\u2192(${enemy.q},${enemy.r})`, 'log-attack');
+      for (let i = 0; i < stillNeed; i++) {
+        const u = avail[i];
+        assigned.add(u.k);
+        pendingDmg[enemy.k]++;
+        plans[myOwner].push({ kind: 'attack', from: { q: u.q, r: u.r }, to: { q: enemy.q, r: enemy.r } });
+        addLog(`AI P${myOwner} KO (${u.q},${u.r})\u2192(${enemy.q},${enemy.r})`, 'log-attack');
+      }
     }
   }
-  } // end Phase 1 visibility gate
 
-  // ── Phase 2: Remaining units ───────────────────────────────────────────────
+  // ── Phase 2: Remaining units ──────────────────────────────────────────────
   const myTroops    = myTilesAll.reduce((s, t) => s + t.troops, 0);
   const enemyTroops = enemyTilesAll.reduce((s, t) => s + t.troops, 0);
   const blitz       = enemyTroops > 0 && myTroops >= enemyTroops * 1.4;
 
-  // Enemy cluster centroid (troop-weighted) for directional pressure
-  // When no enemies visible, default to map center (0,0)
   let ecx = 0, ecy = 0;
   if (enemyTroops > 0) {
     for (const e of enemyTilesAll) { ecx += e.q * e.troops; ecy += e.r * e.troops; }
     ecx /= enemyTroops; ecy /= enemyTroops;
   }
 
-  // Hill units first (wider range = best attackers), then strongest
   myTilesAll.sort((a, b) => {
     const ah = hillRange(a.type);
     const bh = hillRange(b.type);
@@ -1778,7 +1824,7 @@ function makeAIPlansHardFor(myOwner) {
   for (const { q, r, k } of myTilesAll) {
     if (assigned.has(k)) continue;
 
-    // A: Attack — prefer targets already taking damage (finish them), then weakest
+    // Attack remaining — prefer targets already taking damage
     const atkTargets = [];
     for (const enemy of enemyTilesAll) {
       if (!canAttack(q, r, enemy.q, enemy.r)) continue;
@@ -1799,13 +1845,11 @@ function makeAIPlansHardFor(myOwner) {
       continue;
     }
 
-    // B: Move — score each option (including staying put)
+    // Move — scored positioning
     const moveable = getAIMoveOptionsFor(q, r, myOwner);
-    const safeR = getStormRadius();
-    const curTile = tiles.get(hexKey(q, r));
+    const curTile  = tiles.get(hexKey(q, r));
     const curRange = getTileRange(curTile);
 
-    // Score staying put — reward spawn buildup and strong positioning
     let stayScore = 0;
     const spawnProg = curTile.ownedTurns || 0;
     stayScore += spawnProg * 4;
@@ -1825,7 +1869,7 @@ function makeAIPlansHardFor(myOwner) {
 
     let best = null, bestScore = stayScore;
     for (const mt of moveable) {
-      const destType = tiles.get(hexKey(mt.q, mt.r)).type;
+      const destType  = tiles.get(hexKey(mt.q, mt.r)).type;
       const destRange = getTileRange(tiles.get(hexKey(mt.q, mt.r)));
       let score = 0;
 
@@ -1862,29 +1906,44 @@ function makeAIPlansHardFor(myOwner) {
 
 // ─── Win condition ────────────────────────────────────────────────────────────
 function checkWin() {
-  let p1c = 0, p2c = 0, p1t = 0, p2t = 0;
-  for (const tile of tiles.values()) {
-    if (tile.owner === OWNER_P1) { p1c++; p1t += tile.troops; }
-    if (tile.owner === OWNER_P2) { p2c++; p2t += tile.troops; }
-  }
+  const alive = getAlivePlayers();
   updateHUD();
 
-  if (p1c === 0 && p2c === 0) {
-    // Tiebreaker: whoever had more troops before this turn's resolution wins
-    if (preResolveTroops.p1 > preResolveTroops.p2)      showWin('Player 1 Wins! (Last standing)');
-    else if (preResolveTroops.p2 > preResolveTroops.p1) showWin('Player 2 Wins! (Last standing)');
-    else                                                 showWin('Draw!');
+  if (alive.length === 0) {
+    // All eliminated simultaneously — tiebreaker by pre-resolve troops
+    let best = null, bestTroops = -1;
+    for (const p of getActivePlayers()) {
+      const troops = preResolveTroops[p] || 0;
+      if (troops > bestTroops) { bestTroops = troops; best = p; }
+    }
+    if (best !== null && bestTroops > 0) showWin(`Player ${best} Wins! (Last standing)`);
+    else showWin('Draw!');
+    return true;
   }
-  else if (p1c === 0)              showWin('Player 2 Wins!');
-  else if (p2c === 0)              showWin('Player 1 Wins!');
-  // Timeout: if storm has consumed the entire map, most tiles/troops wins
-  else if (getStormRadius() < 0) {
-    if      (p1c > p2c) showWin('Player 1 Wins! (Territory)');
-    else if (p2c > p1c) showWin('Player 2 Wins! (Territory)');
-    else if (p1t > p2t) showWin('Player 1 Wins! (Troops)');
-    else if (p2t > p1t) showWin('Player 2 Wins! (Troops)');
-    else                showWin('Draw!');
+
+  if (alive.length === 1) {
+    showWin(`Player ${alive[0]} Wins!`);
+    return true;
   }
+
+  // Storm timeout
+  if (getStormRadius() < 0) {
+    let bestP = null, bestTiles = -1, bestTroops = -1;
+    for (const p of alive) {
+      let tc = 0, tt = 0;
+      for (const tile of tiles.values()) {
+        if (tile.owner === p) { tc++; tt += tile.troops; }
+      }
+      if (tc > bestTiles || (tc === bestTiles && tt > bestTroops)) {
+        bestP = p; bestTiles = tc; bestTroops = tt;
+      }
+    }
+    if (bestP !== null) showWin(`Player ${bestP} Wins! (Territory)`);
+    else showWin('Draw!');
+    return true;
+  }
+
+  return false;
 }
 
 function showWin(msg) {
@@ -1897,14 +1956,11 @@ function showWin(msg) {
 function isMobile() { return window.innerWidth <= 700; }
 
 function initMobileUI() {
-  const toggle = document.getElementById('sidebar-toggle');
+  const toggle  = document.getElementById('sidebar-toggle');
   const sidebar = document.getElementById('sidebar');
 
-  toggle.addEventListener('click', () => {
-    sidebar.classList.toggle('open');
-  });
+  toggle.addEventListener('click', () => { sidebar.classList.toggle('open'); });
 
-  // Close sidebar when tapping outside on mobile
   document.addEventListener('pointerdown', (e) => {
     if (sidebar.classList.contains('open') &&
         !sidebar.contains(e.target) &&
@@ -1913,16 +1969,10 @@ function initMobileUI() {
     }
   });
 
-  // Mobile bar button wiring
-  const mMove   = document.getElementById('m-btn-move');
-  const mAttack = document.getElementById('m-btn-attack');
-  const mUndo   = document.getElementById('m-btn-undo');
-  const mDone   = document.getElementById('m-btn-done');
-
-  mMove.addEventListener('click',   onBtnMove);
-  mAttack.addEventListener('click', onBtnAttack);
-  mUndo.addEventListener('click',   onBtnUndo);
-  mDone.addEventListener('click',   onBtnDone);
+  document.getElementById('m-btn-move').addEventListener('click',   onBtnMove);
+  document.getElementById('m-btn-attack').addEventListener('click', onBtnAttack);
+  document.getElementById('m-btn-undo').addEventListener('click',   onBtnUndo);
+  document.getElementById('m-btn-done').addEventListener('click',   onBtnDone);
 }
 
 function updateMobileBar() {
@@ -1932,26 +1982,25 @@ function updateMobileBar() {
   const mAtk   = document.getElementById('m-btn-attack');
   const mUndo  = document.getElementById('m-btn-undo');
 
-  const currentOwner = phase === PHASE_P1 ? OWNER_P1 : OWNER_P2;
-  const pNum = currentOwner === OWNER_P1 ? 1 : 2;
+  const currentOwner = phaseOwner();
 
   if (pendingAction === 'move') {
-    mPhase.textContent = `P${pNum}: Tap a tile to move to`;
+    mPhase.textContent = `P${currentOwner}: Tap a tile to move to`;
   } else if (pendingAction === 'attack') {
-    mPhase.textContent = `P${pNum}: Tap a target to attack`;
+    mPhase.textContent = `P${currentOwner}: Tap a target to attack`;
   } else if (selected) {
     const tile = tiles.get(hexKey(selected.q, selected.r));
     const hasMoved    = plans[currentOwner].some(p => p.kind === 'move'   && p.from.q === selected.q && p.from.r === selected.r);
     const hasAttacked = plans[currentOwner].some(p => p.kind === 'attack' && p.from.q === selected.q && p.from.r === selected.r);
     mMove.disabled  = hasMoved    || tile.owner !== currentOwner || tile.troops === 0;
     mAtk.disabled   = hasAttacked || tile.owner !== currentOwner || tile.troops === 0;
-    mPhase.textContent = `P${pNum}: (${selected.q},${selected.r}) selected`;
+    mPhase.textContent = `P${currentOwner}: (${selected.q},${selected.r}) selected`;
   } else {
-    mPhase.textContent = `P${pNum}'s Turn — Tap a tile`;
+    mPhase.textContent = `P${currentOwner}'s Turn \u2014 Tap a tile`;
     mMove.disabled  = true;
     mAtk.disabled   = true;
   }
-  mUndo.disabled = plans[currentOwner].length === 0;
+  mUndo.disabled = !plans[currentOwner] || plans[currentOwner].length === 0;
 }
 
 function initTouchZoom() {
@@ -2012,7 +2061,7 @@ function initMousePan() {
   let dragging = false, lastMX = 0, lastMY = 0;
 
   canvas.addEventListener('pointerdown', (e) => {
-    if (e.button === 1 || e.button === 2) {          // middle or right click
+    if (e.button === 1 || e.button === 2) {
       dragging = true; lastMX = e.clientX; lastMY = e.clientY;
       e.preventDefault();
     }
